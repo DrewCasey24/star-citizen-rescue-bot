@@ -27,12 +27,40 @@ SERVICE_CHOICES = [
     discord.SelectOption(label="Recovery / Transport", value="recovery-transport", emoji="🚀"),
 ]
 
+SERVICE_NAMES = {
+    "medical": "Medical Rescue",
+    "search-rescue": "Search & Rescue",
+    "repair-refuel": "Repair / Refuel",
+    "security": "Security / Escort",
+    "recovery-transport": "Recovery / Transport",
+}
+
+SERVICE_ROLE_NAMES = {
+    "medical": ["S.E.R.E. Sector"],
+    "search-rescue": ["S.E.R.E. Sector", "Military Sector"],
+    "repair-refuel": ["S.E.R.E. Sector", "Logistics Sector"],
+    "security": ["Military Sector"],
+    "recovery-transport": ["Logistics Sector"],
+}
+
 
 def safe_channel_name(value: str) -> str:
     value = value.lower().strip()
     value = re.sub(r"[^a-z0-9-]+", "-", value)
     value = re.sub(r"-+", "-", value).strip("-")
     return value[:45] or "incident"
+
+
+def responder_roles(guild: discord.Guild, service: str) -> tuple[list[discord.Role], list[str]]:
+    roles = []
+    missing = []
+    for role_name in SERVICE_ROLE_NAMES.get(service, []):
+        role = discord.utils.get(guild.roles, name=role_name)
+        if role is None:
+            missing.append(role_name)
+        else:
+            roles.append(role)
+    return roles, missing
 
 
 class RescueBot(commands.Bot):
@@ -89,6 +117,7 @@ class RescueDetailsModal(discord.ui.Modal, title="Request Assistance"):
         if category is None:
             category = await guild.create_category("Active Incidents", reason="Star Citizen rescue dispatch setup")
 
+        roles, missing_roles = responder_roles(guild, self.service)
         bot_member = guild.me
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -98,6 +127,12 @@ class RescueDetailsModal(discord.ui.Modal, title="Request Assistance"):
                 read_message_history=True,
             ),
         }
+        for role in roles:
+            overwrites[role] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+            )
         if bot_member:
             overwrites[bot_member] = discord.PermissionOverwrite(
                 view_channel=True,
@@ -106,7 +141,7 @@ class RescueDetailsModal(discord.ui.Modal, title="Request Assistance"):
                 read_message_history=True,
             )
 
-        service_name = self.service.replace("-", " ").title()
+        service_name = SERVICE_NAMES.get(self.service, self.service.replace("-", " ").title())
         channel_name = f"rescue-{safe_channel_name(str(self.callsign))}"
         channel = await guild.create_text_channel(
             channel_name,
@@ -129,11 +164,28 @@ class RescueDetailsModal(discord.ui.Modal, title="Request Assistance"):
         embed.add_field(name="Situation", value=str(self.situation), inline=False)
         embed.set_footer(text=f"Requester ID: {interaction.user.id}")
 
+        role_mentions = " ".join(role.mention for role in roles)
+        paging_text = f"🚨 **DISPATCH:** {role_mentions}" if role_mentions else "🚨 **DISPATCH:** No responder role was found."
+        content = (
+            f"{paging_text}\n"
+            f"{interaction.user.mention} your rescue channel is ready. Responders can coordinate here."
+        )
+
         await channel.send(
-            content=f"{interaction.user.mention} your rescue channel is ready. Responders can coordinate here.",
+            content=content,
             embed=embed,
             view=IncidentControlsView(),
+            allowed_mentions=discord.AllowedMentions(roles=True, users=True),
         )
+
+        if missing_roles:
+            await channel.send(
+                "⚠️ Dispatch configuration warning: I could not find the following Discord role(s): "
+                + ", ".join(f"`{name}`" for name in missing_roles)
+                + ". Check that the role names match exactly."
+            )
+            logger.warning("Missing responder role(s) in guild %s: %s", guild.id, ", ".join(missing_roles))
+
         await interaction.followup.send(f"Rescue request created: {channel.mention}", ephemeral=True)
 
 
@@ -235,11 +287,12 @@ async def ping(interaction: discord.Interaction) -> None:
 async def rescue_status(interaction: discord.Interaction) -> None:
     embed = discord.Embed(
         title="Star Citizen Rescue Dispatch",
-        description="Rescue request and incident controls are online.",
+        description="Rescue request, sector paging, and incident controls are online.",
         color=discord.Color.blurple(),
     )
     embed.add_field(name="Discord", value="Online", inline=True)
     embed.add_field(name="Incident System", value="Online", inline=True)
+    embed.add_field(name="Sector Paging", value="Online", inline=True)
     embed.add_field(name="Database", value="Configured" if DATABASE_URL else "Not attached yet", inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -252,7 +305,7 @@ async def rescue_setup(interaction: discord.Interaction) -> None:
         description=(
             "Need assistance in the 'verse? Use the button below to open a rescue request.\n\n"
             "You will choose the service you need and provide your callsign, location, and situation. "
-            "A private incident channel will then be created for coordination with responders."
+            "A private incident channel will then be created and the appropriate sector will be paged."
         ),
         color=discord.Color.red(),
     )
@@ -270,6 +323,12 @@ async def rescue_setup(interaction: discord.Interaction) -> None:
 async def rescue_setup_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
     if isinstance(error, app_commands.MissingPermissions):
         await interaction.response.send_message("You need the Manage Server permission to run this command.", ephemeral=True)
+        return
+    if isinstance(error, app_commands.CommandInvokeError) and isinstance(error.original, discord.Forbidden):
+        if interaction.response.is_done():
+            await interaction.followup.send("I do not have permission to post in this channel.", ephemeral=True)
+        else:
+            await interaction.response.send_message("I do not have permission to post in this channel.", ephemeral=True)
         return
     raise error
 
