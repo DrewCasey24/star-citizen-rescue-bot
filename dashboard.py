@@ -20,6 +20,7 @@ COOKIE_SECURE = os.getenv("DASHBOARD_COOKIE_SECURE", "true").lower() != "false"
 
 DISCORD_API = "https://discord.com/api/v10"
 MANAGE_GUILD = 0x20
+BOT_PERMISSIONS = 397284568080
 
 SERVICES = {
     "medical": "Medical Rescue",
@@ -134,7 +135,7 @@ def page(title, body, user=None):
 <style>
 :root{{--bg:#090d14;--panel:#111827;--panel2:#172033;--line:#263247;--text:#e7edf7;--muted:#91a0b8;--accent:#5da8ff;--good:#3ddc97;--warn:#ffb84d;--danger:#ff5d6c}}
 *{{box-sizing:border-box}} body{{margin:0;background:linear-gradient(145deg,#080b11,#0d1420 55%,#0b1019);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;min-height:100vh}}
-a{{color:#8bc0ff;text-decoration:none}} .wrap{{max-width:1240px;margin:0 auto;padding:28px 20px 60px}} header{{display:flex;justify-content:space-between;gap:20px;align-items:center;margin-bottom:26px}} h1{{font-size:24px;margin:0}} h2{{font-size:17px;margin:0 0 14px}} .brand small,.muted{{color:var(--muted)}} .user{{color:var(--muted);font-size:14px}} .grid{{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}} .card{{background:rgba(17,24,39,.92);border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:0 14px 35px rgba(0,0,0,.18)}} .span3{{grid-column:span 3}} .span4{{grid-column:span 4}} .span6{{grid-column:span 6}} .span12{{grid-column:span 12}} .metric{{font-size:30px;font-weight:750;margin-top:4px}} .label{{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}} table{{width:100%;border-collapse:collapse;font-size:14px}} th,td{{text-align:left;padding:11px 10px;border-bottom:1px solid var(--line);vertical-align:top}} th{{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}} .pill{{display:inline-block;padding:4px 8px;border-radius:999px;background:#202b3d;font-size:12px}} .p1{{background:#52242c;color:#ffb4bd}} .p2{{background:#50351d;color:#ffd49a}} .p3{{background:#153c32;color:#8df0c5}} label{{display:block;color:var(--muted);font-size:12px;margin:12px 0 6px}} select{{width:100%;background:#0c1320;color:var(--text);border:1px solid var(--line);border-radius:9px;padding:10px;min-height:42px}} select[multiple]{{min-height:120px}} .btn{{display:inline-block;border:0;border-radius:9px;background:#2b74c8;color:white;padding:11px 16px;font-weight:650;cursor:pointer}} .btn.secondary{{background:#263247}} .notice{{padding:12px 14px;border:1px solid #315f45;background:#122d22;border-radius:10px;color:#a8efc8;margin-bottom:16px}} .guild{{display:flex;align-items:center;justify-content:space-between;padding:16px 0;border-bottom:1px solid var(--line)}} .guild:last-child{{border:0}} .section-nav{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}} .section-nav a{{padding:8px 10px;background:#111827;border:1px solid var(--line);border-radius:8px}} @media(max-width:850px){{.span3,.span4,.span6{{grid-column:span 12}} header{{align-items:flex-start;flex-direction:column}}}}
+a{{color:#8bc0ff;text-decoration:none}} .wrap{{max-width:1240px;margin:0 auto;padding:28px 20px 60px}} header{{display:flex;justify-content:space-between;gap:20px;align-items:center;margin-bottom:26px}} h1{{font-size:24px;margin:0}} h2{{font-size:17px;margin:0 0 14px}} .brand small,.muted{{color:var(--muted)}} .user{{color:var(--muted);font-size:14px}} .grid{{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}} .card{{background:rgba(17,24,39,.92);border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:0 14px 35px rgba(0,0,0,.18)}} .span3{{grid-column:span 3}} .span4{{grid-column:span 4}} .span6{{grid-column:span 6}} .span12{{grid-column:span 12}} .metric{{font-size:30px;font-weight:750;margin-top:4px}} .label{{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}} table{{width:100%;border-collapse:collapse;font-size:14px}} th,td{{text-align:left;padding:11px 10px;border-bottom:1px solid var(--line);vertical-align:top}} th{{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}} .pill{{display:inline-block;padding:4px 8px;border-radius:999px;background:#202b3d;font-size:12px}} .p1{{background:#52242c;color:#ffb4bd}} .p2{{background:#50351d;color:#ffd49a}} .p3{{background:#153c32;color:#8df0c5}} label{{display:block;color:var(--muted);font-size:12px;margin:12px 0 6px}} select{{width:100%;background:#0c1320;color:var(--text);border:1px solid var(--line);border-radius:9px;padding:10px;min-height:42px}} select[multiple]{{min-height:120px}} .btn{{display:inline-block;border:0;border-radius:9px;background:#2b74c8;color:white;padding:11px 16px;font-weight:650;cursor:pointer}} .btn.secondary{{background:#263247}} .btn.install{{background:#237a57}} .notice{{padding:12px 14px;border:1px solid #315f45;background:#122d22;border-radius:10px;color:#a8efc8;margin-bottom:16px}} .guild{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 0;border-bottom:1px solid var(--line)}} .guild:last-child{{border:0}} .guild-actions{{display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:flex-end}} .status{{display:inline-block;padding:4px 8px;border-radius:999px;font-size:12px;font-weight:650}} .installed{{background:#153c32;color:#8df0c5}} .not-installed{{background:#50351d;color:#ffd49a}} .section-nav{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}} .section-nav a{{padding:8px 10px;background:#111827;border:1px solid var(--line);border-radius:8px}} @media(max-width:850px){{.span3,.span4,.span6{{grid-column:span 12}} header{{align-items:flex-start;flex-direction:column}} .guild{{align-items:flex-start;flex-direction:column}} .guild-actions{{justify-content:flex-start}}}}
 </style>
 </head>
 <body><div class="wrap"><header><div class="brand"><h1>🚨 Star Citizen Rescue Dispatch</h1><small>Operations Dashboard</small></div>{user_html}</header>{body}</div></body></html>"""
@@ -159,6 +160,19 @@ def require_guild_access(request, guild_id):
     raise HTTPException(status_code=403, detail="Manage Server permission is required.")
 
 
+def bot_install_url(guild_id):
+    params = urlencode(
+        {
+            "client_id": CLIENT_ID,
+            "scope": "bot applications.commands",
+            "permissions": str(BOT_PERMISSIONS),
+            "guild_id": str(guild_id),
+            "disable_guild_select": "true",
+        }
+    )
+    return f"https://discord.com/oauth2/authorize?{params}"
+
+
 async def discord_get(path, token=None):
     headers = {"Authorization": f"Bearer {token}"} if token else {"Authorization": f"Bot {BOT_TOKEN}"}
     async with httpx.AsyncClient(timeout=15) as client:
@@ -178,6 +192,30 @@ async def discord_post(path, payload):
         return response.json()
 
 
+async def bot_guild_ids():
+    installed = set()
+    after = None
+    while True:
+        path = "/users/@me/guilds?limit=200"
+        if after:
+            path += f"&after={after}"
+        guilds = await discord_get(path)
+        installed.update(str(g["id"]) for g in guilds)
+        if len(guilds) < 200:
+            break
+        after = guilds[-1]["id"]
+    return installed
+
+
+async def require_bot_installed(guild_id):
+    try:
+        await discord_get(f"/guilds/{guild_id}")
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (403, 404):
+            raise HTTPException(status_code=409, detail="The rescue bot is not installed in this Discord server.")
+        raise HTTPException(status_code=502, detail=f"Discord API error: {exc.response.status_code}")
+
+
 @app.get("/health")
 async def health():
     return {"ok": True}
@@ -191,12 +229,39 @@ async def home(request: Request):
             "Sign In",
             '<div class="card" style="max-width:620px"><h2>Rescue Operations Dashboard</h2><p class="muted">Sign in with Discord to view rescue operations and manage configuration. Server configuration requires Manage Server permission.</p><a class="btn" href="/login">Sign in with Discord</a></div>',
         )
+
     guilds = [g for g in manageable_guilds(request) if g.get("can_manage")]
-    rows = "".join(
-        f'<div class="guild"><div><strong>{esc(g["name"])}</strong><div class="muted">Guild {esc(g["id"])}</div></div><a class="btn secondary" href="/guild/{esc(g["id"])}">Open Dashboard</a></div>'
-        for g in guilds
-    ) or '<p class="muted">No servers with Manage Server permission were found for this login.</p>'
-    return page("Servers", f'<div class="card"><h2>Select a server</h2>{rows}</div>', user)
+    try:
+        installed_ids = await bot_guild_ids()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"Unable to check bot installations: Discord API {exc.response.status_code}")
+
+    rows = []
+    for guild in guilds:
+        guild_id = str(guild["id"])
+        if guild_id in installed_ids:
+            action = (
+                '<div class="guild-actions"><span class="status installed">Bot Installed</span>'
+                f'<a class="btn secondary" href="/guild/{esc(guild_id)}">Open Dashboard</a></div>'
+            )
+        else:
+            install_url = esc(bot_install_url(guild_id))
+            action = (
+                '<div class="guild-actions"><span class="status not-installed">Bot Not Installed</span>'
+                f'<a class="btn install" href="{install_url}" target="_blank" rel="noopener">Install Bot</a></div>'
+            )
+        rows.append(
+            f'<div class="guild"><div><strong>{esc(guild["name"])}</strong><div class="muted">Guild {esc(guild_id)}</div></div>{action}</div>'
+        )
+
+    rows_html = "".join(rows) or '<p class="muted">No servers with Manage Server permission were found for this login.</p>'
+    return page(
+        "Servers",
+        '<div class="card"><h2>Select a server</h2><p class="muted">Installed servers can be managed immediately. For another server you manage, install the bot first and then refresh this page.</p>'
+        + rows_html
+        + '</div>',
+        user,
+    )
 
 
 @app.get("/login")
@@ -301,6 +366,7 @@ def option(value, label, selected=False):
 @app.get("/guild/{guild_id}", response_class=HTMLResponse)
 async def guild_dashboard(request: Request, guild_id: int, saved: int = 0):
     guild_info = require_guild_access(request, guild_id)
+    await require_bot_installed(guild_id)
     try:
         roles, channels = await discord_get(f"/guilds/{guild_id}/roles"), await discord_get(f"/guilds/{guild_id}/channels")
     except httpx.HTTPStatusError as exc:
@@ -315,7 +381,6 @@ async def guild_dashboard(request: Request, guild_id: int, saved: int = 0):
     categories = [c for c in channels if c.get("type") == 4]
 
     role_options = "".join(option(r["id"], r["name"], int(r["id"]) in selected_responder_ids) for r in selectable_roles)
-    text_options = '<option value="">Not configured</option>' + "".join(option(c["id"], f'#{c["name"]}') for c in text_channels)
     category_options = '<option value="">Use / create Active Incidents</option>' + "".join(option(c["id"], c["name"], int(c["id"]) == incident_category_id) for c in categories)
 
     def channel_select(name, selected):
@@ -428,6 +493,7 @@ async def post_request_panel(channel_id):
 @app.post("/guild/{guild_id}/config")
 async def save_config(request: Request, guild_id: int):
     require_guild_access(request, guild_id)
+    await require_bot_installed(guild_id)
     form = await request.form()
     csrf = str(form.get("csrf") or "")
     expected_csrf = str(request.session.get("csrf") or "")
