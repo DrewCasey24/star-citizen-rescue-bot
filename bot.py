@@ -36,6 +36,12 @@ SERVICE_ROLE_NAMES = {
     "security": ["Military Sector"],
     "recovery-transport": ["Logistics Sector", "S.E.R.E. Sector"],
 }
+STATUS_DISPLAY = {
+    "awaiting_responder": "🔴 Awaiting Responder",
+    "en_route": "🟡 En Route",
+    "on_scene": "🟢 On Scene",
+    "backup_requested": "🟠 Backup Requested",
+}
 
 
 def safe_channel_name(value: str) -> str:
@@ -79,6 +85,11 @@ def requester_id_from_embed(embed: discord.Embed) -> int | None:
         return None
     match = re.search(r"Requester ID: (\d+)", embed.footer.text)
     return int(match.group(1)) if match else None
+
+
+def truncate(value: str, length: int) -> str:
+    value = value.strip()
+    return value if len(value) <= length else value[: length - 1] + "…"
 
 
 class RescueBot(commands.Bot):
@@ -125,6 +136,13 @@ class RescueBot(commands.Bot):
 
                     CREATE INDEX IF NOT EXISTS rescue_incidents_guild_status_idx
                     ON rescue_incidents (guild_id, status);
+
+                    CREATE TABLE IF NOT EXISTS rescue_dispatch_boards (
+                        guild_id BIGINT PRIMARY KEY,
+                        channel_id BIGINT NOT NULL,
+                        message_id BIGINT NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
                     """
                 )
             self.db_error = None
@@ -209,6 +227,100 @@ class RescueBot(commands.Bot):
                     await conn.execute(query, channel_id)
         except Exception:
             logger.exception("Failed to update incident %s in PostgreSQL.", channel_id)
+
+    async def active_incidents(self, guild_id: int) -> list[asyncpg.Record]:
+        if not self.db_pool:
+            return []
+        try:
+            async with self.db_pool.acquire() as conn:
+                return await conn.fetch(
+                    """
+                    SELECT incident_number, channel_id, callsign, service, location,
+                           status, primary_responder_id, created_at
+                    FROM rescue_incidents
+                    WHERE guild_id=$1 AND status <> 'closed'
+                    ORDER BY incident_number ASC
+                    LIMIT 24;
+                    """,
+                    guild_id,
+                )
+        except Exception:
+            logger.exception("Failed to load active incidents for guild %s.", guild_id)
+            return []
+
+    async def build_dispatch_board_embed(self, guild: discord.Guild) -> discord.Embed:
+        incidents = await self.active_incidents(guild.id)
+        embed = discord.Embed(
+            title="📡 STAR CITIZEN RESCUE — LIVE DISPATCH BOARD",
+            description="Active rescue operations update automatically as responders work incidents.",
+            color=discord.Color.blurple(),
+            timestamp=discord.utils.utcnow(),
+        )
+        if not incidents:
+            embed.add_field(name="✅ No Active Incidents", value="All rescue calls are currently clear.", inline=False)
+        else:
+            for row in incidents:
+                incident_id = f"RESCUE-{row['incident_number']:04d}"
+                service_name = SERVICE_NAMES.get(row["service"], row["service"].replace("-", " ").title())
+                status = STATUS_DISPLAY.get(row["status"], row["status"].replace("_", " ").title())
+                responder = f"<@{row['primary_responder_id']}>" if row["primary_responder_id"] else "Unassigned"
+                channel = f"<#{row['channel_id']}>" if row["channel_id"] else "Unavailable"
+                created = int(row["created_at"].timestamp())
+                value = (
+                    f"**{service_name}** • {status}\n"
+                    f"**Callsign:** {truncate(row['callsign'], 45)}\n"
+                    f"**Location:** {truncate(row['location'], 90)}\n"
+                    f"**Primary:** {responder} • **Opened:** <t:{created}:R>\n"
+                    f"**Channel:** {channel}"
+                )
+                embed.add_field(name=incident_id, value=value, inline=False)
+        embed.set_footer(text=f"Active Incidents: {len(incidents)} • Last refreshed")
+        return embed
+
+    async def save_dispatch_board(self, guild_id: int, channel_id: int, message_id: int) -> None:
+        if not self.db_pool:
+            return
+        async with self.db_pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO rescue_dispatch_boards (guild_id, channel_id, message_id, updated_at)
+                VALUES ($1, $2, $3, NOW())
+                ON CONFLICT (guild_id)
+                DO UPDATE SET channel_id=EXCLUDED.channel_id,
+                              message_id=EXCLUDED.message_id,
+                              updated_at=NOW();
+                """,
+                guild_id, channel_id, message_id,
+            )
+
+    async def refresh_dispatch_board(self, guild: discord.Guild) -> bool:
+        if not self.db_pool:
+            return False
+        try:
+            async with self.db_pool.acquire() as conn:
+                board = await conn.fetchrow(
+                    "SELECT channel_id, message_id FROM rescue_dispatch_boards WHERE guild_id=$1;",
+                    guild.id,
+                )
+            if not board:
+                return False
+            channel = guild.get_channel(board["channel_id"])
+            if not isinstance(channel, discord.TextChannel):
+                logger.warning("Dispatch board channel %s is unavailable in guild %s.", board["channel_id"], guild.id)
+                return False
+            try:
+                message = await channel.fetch_message(board["message_id"])
+            except discord.NotFound:
+                logger.warning("Dispatch board message %s was deleted in guild %s.", board["message_id"], guild.id)
+                return False
+            await message.edit(embed=await self.build_dispatch_board_embed(guild))
+            return True
+        except discord.Forbidden:
+            logger.exception("Missing permission to update dispatch board in guild %s.", guild.id)
+            return False
+        except Exception:
+            logger.exception("Failed to refresh dispatch board in guild %s.", guild.id)
+            return False
 
     async def setup_hook(self):
         await self.setup_database()
@@ -304,6 +416,7 @@ class RescueDetailsModal(discord.ui.Modal, title="Request Assistance"):
         )
         if missing_roles:
             await channel.send("⚠️ Test/configuration notice: I could not find the following Discord role(s): " + ", ".join(f"`{name}`" for name in missing_roles) + ". The incident was still created normally.")
+        await bot.refresh_dispatch_board(guild)
         await interaction.followup.send(f"{incident_id} created: {channel.mention}", ephemeral=True)
 
 
@@ -346,6 +459,8 @@ class IncidentControlsView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
         if db_action and interaction.channel:
             await bot.update_incident(interaction.channel.id, db_action, interaction.user.id)
+            if interaction.guild:
+                await bot.refresh_dispatch_board(interaction.guild)
 
     @discord.ui.button(label="Respond", style=discord.ButtonStyle.success, emoji="🚀", custom_id="rescue:respond")
     async def respond(self, interaction, button):
@@ -363,6 +478,8 @@ class IncidentControlsView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
         if interaction.channel:
             await bot.update_incident(interaction.channel.id, "respond", interaction.user.id)
+        if interaction.guild:
+            await bot.refresh_dispatch_board(interaction.guild)
         await interaction.followup.send(f"🚀 {interaction.user.mention} has claimed {incident_id_from_channel(interaction.channel)} and is responding.")
 
     @discord.ui.button(label="Arrived", style=discord.ButtonStyle.primary, emoji="📍", custom_id="rescue:arrived")
@@ -387,6 +504,7 @@ class IncidentControlsView(discord.ui.View):
             child.disabled = True
         await interaction.response.edit_message(embed=embed, view=self)
         await bot.update_incident(channel.id, "close", interaction.user.id)
+        await bot.refresh_dispatch_board(channel.guild)
         await channel.send(f"🔒 {incident_id_from_channel(channel)} closed by {interaction.user.mention}. This incident is now read-only.")
         requester_id = requester_id_from_embed(embed)
         if requester_id:
@@ -404,6 +522,9 @@ class IncidentControlsView(discord.ui.View):
 async def on_ready():
     logger.info("Logged in as %s (%s)", bot.user, bot.user.id if bot.user else "unknown")
     logger.info("Database: %s", "online" if bot.db_pool else ("error" if bot.db_error else "not configured"))
+    if bot.db_pool:
+        for guild in bot.guilds:
+            await bot.refresh_dispatch_board(guild)
 
 
 @bot.tree.command(name="ping", description="Check whether the rescue bot is online.")
@@ -421,7 +542,7 @@ async def rescue_status(interaction):
         database_status = "Connection Error"
     else:
         database_status = "Not Configured"
-    embed = discord.Embed(title="Star Citizen Rescue Dispatch", description="Rescue request, sector paging, incident claiming, persistence, and controls are online.", color=discord.Color.blurple())
+    embed = discord.Embed(title="Star Citizen Rescue Dispatch", description="Rescue request, sector paging, incident claiming, persistence, live dispatch board, and controls are online.", color=discord.Color.blurple())
     embed.add_field(name="Discord", value="Online", inline=True)
     embed.add_field(name="Incident System", value="Online", inline=True)
     embed.add_field(name="Sector Paging", value="Online", inline=True)
@@ -448,8 +569,27 @@ async def rescue_setup(interaction):
             await interaction.followup.send("I can run the command, but I do not have permission to post in this channel.", ephemeral=True)
 
 
+@bot.tree.command(name="dispatch-board-setup", description="Create or move the live rescue dispatch board to this channel.")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def dispatch_board_setup(interaction: discord.Interaction):
+    if interaction.guild is None or not isinstance(interaction.channel, discord.TextChannel):
+        await interaction.response.send_message("Run this command in a server text channel.", ephemeral=True)
+        return
+    if not bot.db_pool:
+        await interaction.response.send_message("The dispatch board requires the PostgreSQL database to be online.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        message = await interaction.channel.send(embed=await bot.build_dispatch_board_embed(interaction.guild))
+        await bot.save_dispatch_board(interaction.guild.id, interaction.channel.id, message.id)
+        await interaction.followup.send(f"Live dispatch board created: {message.jump_url}", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.followup.send("I do not have permission to post or manage the dispatch board in this channel.", ephemeral=True)
+
+
 @rescue_setup.error
-async def rescue_setup_error(interaction, error):
+@dispatch_board_setup.error
+async def setup_command_error(interaction, error):
     if isinstance(error, app_commands.MissingPermissions):
         if interaction.response.is_done():
             await interaction.followup.send("You need the Manage Server permission to run this command.", ephemeral=True)
