@@ -100,7 +100,6 @@ def configured_is_responder(member):
 
 
 _original_setup_database = core.RescueBot.setup_database
-_original_setup_hook = core.RescueBot.setup_hook
 _original_close = core.RescueBot.close
 
 
@@ -131,8 +130,17 @@ async def setup_database_with_dashboard(self):
     await refresh_config_cache(self)
 
 
-async def setup_hook_with_dashboard(self):
-    await _original_setup_hook(self)
+async def setup_hook_multi_guild(self):
+    """Initialize persistence/views and globally sync commands for every installed guild."""
+    await self.setup_database()
+    self.add_view(core.RequestAssistanceView())
+    self.add_view(core.IncidentControlsView())
+
+    # Global application-command sync is intentional. A fixed GUILD_ID would make
+    # commands available only in one development server and break multi-guild use.
+    await self.tree.sync()
+    logger.info("Global application commands synced for multi-guild operation.")
+
     if self.db_pool and not getattr(self, "_dashboard_config_task", None):
         self._dashboard_config_task = asyncio.create_task(config_refresh_loop(self))
 
@@ -242,7 +250,7 @@ async def dynamic_request_submit(self, interaction):
 
 
 core.RescueBot.setup_database = setup_database_with_dashboard
-core.RescueBot.setup_hook = setup_hook_with_dashboard
+core.RescueBot.setup_hook = setup_hook_multi_guild
 core.RescueBot.close = close_with_dashboard
 core.responder_roles = configured_responder_roles
 core.all_responder_roles = configured_all_responder_roles
