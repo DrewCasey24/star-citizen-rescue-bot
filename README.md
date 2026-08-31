@@ -1,6 +1,6 @@
 # Star Citizen Rescue Bot
 
-A Discord-based rescue paging and dispatch system for a Star Citizen game community.
+A Discord-based rescue paging and dispatch system for Star Citizen communities.
 
 ## Current features
 
@@ -14,6 +14,17 @@ A Discord-based rescue paging and dispatch system for a Star Citizen game commun
 - Rescue history, completed-incident log, and statistics
 - Discord-authenticated web operations dashboard
 - Database-backed responder-role, service-paging, channel, and incident-category configuration
+- Multi-guild operation with independent settings and incident data per Discord server
+
+## Multi-guild architecture
+
+The production bot no longer depends on a fixed `GUILD_ID` environment variable. Application commands are synced globally, so the same bot installation can serve any Discord server where the application is installed.
+
+Every server is isolated by its Discord guild ID in PostgreSQL. Incident numbering counters, incidents, dispatch-board configuration, rescue-log configuration, responder roles, paging roles, request channels, and incident categories are all stored per guild.
+
+Installing the bot into another Discord server therefore does not require editing Railway variables or redeploying with a different server ID. Configure each server independently from the web dashboard after installation.
+
+Global Discord application-command updates can take longer to appear than development-only guild command syncs, but this avoids limiting production commands to one server.
 
 ## Environment variables
 
@@ -23,7 +34,6 @@ Bot service:
 
 - `DISCORD_TOKEN` — Discord bot token
 - `DATABASE_URL` — PostgreSQL connection URL
-- `GUILD_ID` — optional server ID for faster development command syncing
 
 Dashboard service:
 
@@ -37,7 +47,7 @@ Dashboard service:
 
 ## Bot startup
 
-The bot now starts through the compatibility/configuration wrapper so dashboard role/category changes are picked up automatically:
+The bot starts through the configuration wrapper so dashboard role/category changes are picked up automatically:
 
 ```bash
 python run_bot.py
@@ -53,7 +63,7 @@ Run locally with:
 uvicorn dashboard:app --host 0.0.0.0 --port 8000
 ```
 
-The dashboard uses Discord OAuth2 scopes `identify guilds`. Only servers where the signed-in user has **Manage Server** permission are shown as configurable.
+The dashboard uses Discord OAuth2 scopes `identify guilds`. Only servers where the signed-in user has **Manage Server** permission can be configured.
 
 Dashboard sections include:
 
