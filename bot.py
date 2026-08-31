@@ -2,6 +2,7 @@ import logging
 import os
 import re
 
+import asyncpg
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -21,7 +22,13 @@ SERVICE_CHOICES = [
     discord.SelectOption(label="Security / Escort", value="security", emoji="🛡️"),
     discord.SelectOption(label="Recovery / Transport", value="recovery-transport", emoji="🚀"),
 ]
-SERVICE_NAMES = {"medical":"Medical Rescue","search-rescue":"Search & Rescue","repair-refuel":"Repair / Refuel","security":"Security / Escort","recovery-transport":"Recovery / Transport"}
+SERVICE_NAMES = {
+    "medical": "Medical Rescue",
+    "search-rescue": "Search & Rescue",
+    "repair-refuel": "Repair / Refuel",
+    "security": "Security / Escort",
+    "recovery-transport": "Recovery / Transport",
+}
 SERVICE_ROLE_NAMES = {
     "medical": ["S.E.R.E. Sector"],
     "search-rescue": ["S.E.R.E. Sector", "Military Sector"],
@@ -40,11 +47,14 @@ def responder_roles(guild: discord.Guild, service: str) -> tuple[list[discord.Ro
     roles, missing = [], []
     for role_name in SERVICE_ROLE_NAMES.get(service, []):
         role = discord.utils.get(guild.roles, name=role_name)
-        (roles if role else missing).append(role if role else role_name)
+        if role:
+            roles.append(role)
+        else:
+            missing.append(role_name)
     return roles, missing
 
 
-def next_incident_number(guild: discord.Guild) -> int:
+def next_channel_incident_number(guild: discord.Guild) -> int:
     highest = 0
     pattern = re.compile(r"^(?:closed-)?rescue-(\d{4,})-")
     for channel in guild.text_channels:
@@ -54,9 +64,14 @@ def next_incident_number(guild: discord.Guild) -> int:
     return highest + 1
 
 
-def incident_number_from_channel(channel: discord.abc.GuildChannel) -> str:
+def incident_number_from_channel(channel: discord.abc.GuildChannel) -> int | None:
     match = re.search(r"rescue-(\d{4,})-", channel.name)
-    return f"RESCUE-{match.group(1)}" if match else "RESCUE"
+    return int(match.group(1)) if match else None
+
+
+def incident_id_from_channel(channel: discord.abc.GuildChannel) -> str:
+    number = incident_number_from_channel(channel)
+    return f"RESCUE-{number:04d}" if number is not None else "RESCUE"
 
 
 def requester_id_from_embed(embed: discord.Embed) -> int | None:
@@ -69,8 +84,134 @@ def requester_id_from_embed(embed: discord.Embed) -> int | None:
 class RescueBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=discord.Intents.default())
+        self.db_pool: asyncpg.Pool | None = None
+        self.db_error: str | None = None
+
+    async def setup_database(self) -> None:
+        if not DATABASE_URL:
+            logger.info("DATABASE_URL is not configured; using Discord channel numbering fallback.")
+            return
+        try:
+            self.db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5, command_timeout=15)
+            async with self.db_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS rescue_incident_counters (
+                        guild_id BIGINT PRIMARY KEY,
+                        last_number BIGINT NOT NULL DEFAULT 0
+                    );
+
+                    CREATE TABLE IF NOT EXISTS rescue_incidents (
+                        id BIGSERIAL PRIMARY KEY,
+                        guild_id BIGINT NOT NULL,
+                        incident_number BIGINT NOT NULL,
+                        channel_id BIGINT,
+                        requester_id BIGINT NOT NULL,
+                        callsign TEXT NOT NULL,
+                        service TEXT NOT NULL,
+                        location TEXT NOT NULL,
+                        situation TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'awaiting_responder',
+                        primary_responder_id BIGINT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        responded_at TIMESTAMPTZ,
+                        arrived_at TIMESTAMPTZ,
+                        backup_requested_at TIMESTAMPTZ,
+                        closed_at TIMESTAMPTZ,
+                        closed_by_id BIGINT,
+                        UNIQUE (guild_id, incident_number),
+                        UNIQUE (channel_id)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS rescue_incidents_guild_status_idx
+                    ON rescue_incidents (guild_id, status);
+                    """
+                )
+            self.db_error = None
+            logger.info("PostgreSQL connected and rescue schema is ready.")
+        except Exception as exc:
+            self.db_pool = None
+            self.db_error = str(exc)
+            logger.exception("PostgreSQL initialization failed; continuing with Discord fallback.")
+
+    async def allocate_incident_number(self, guild_id: int) -> int | None:
+        if not self.db_pool:
+            return None
+        try:
+            async with self.db_pool.acquire() as conn:
+                return await conn.fetchval(
+                    """
+                    INSERT INTO rescue_incident_counters (guild_id, last_number)
+                    VALUES ($1, 1)
+                    ON CONFLICT (guild_id)
+                    DO UPDATE SET last_number = rescue_incident_counters.last_number + 1
+                    RETURNING last_number;
+                    """,
+                    guild_id,
+                )
+        except Exception:
+            logger.exception("Failed to allocate incident number from PostgreSQL.")
+            return None
+
+    async def create_incident_record(self, **values) -> None:
+        if not self.db_pool:
+            return
+        try:
+            async with self.db_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO rescue_incidents (
+                        guild_id, incident_number, channel_id, requester_id,
+                        callsign, service, location, situation, status
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'awaiting_responder');
+                    """,
+                    values["guild_id"], values["incident_number"], values["channel_id"],
+                    values["requester_id"], values["callsign"], values["service"],
+                    values["location"], values["situation"],
+                )
+        except Exception:
+            logger.exception("Failed to save new incident to PostgreSQL.")
+
+    async def update_incident(self, channel_id: int, action: str, user_id: int | None = None) -> None:
+        if not self.db_pool:
+            return
+        queries = {
+            "respond": """
+                UPDATE rescue_incidents
+                SET status='en_route', primary_responder_id=$2,
+                    responded_at=COALESCE(responded_at, NOW())
+                WHERE channel_id=$1;
+            """,
+            "arrived": """
+                UPDATE rescue_incidents
+                SET status='on_scene', arrived_at=COALESCE(arrived_at, NOW())
+                WHERE channel_id=$1;
+            """,
+            "backup": """
+                UPDATE rescue_incidents
+                SET status='backup_requested', backup_requested_at=NOW()
+                WHERE channel_id=$1;
+            """,
+            "close": """
+                UPDATE rescue_incidents
+                SET status='closed', closed_at=NOW(), closed_by_id=$2
+                WHERE channel_id=$1;
+            """,
+        }
+        query = queries.get(action)
+        if not query:
+            return
+        try:
+            async with self.db_pool.acquire() as conn:
+                if action in {"respond", "close"}:
+                    await conn.execute(query, channel_id, user_id)
+                else:
+                    await conn.execute(query, channel_id)
+        except Exception:
+            logger.exception("Failed to update incident %s in PostgreSQL.", channel_id)
 
     async def setup_hook(self):
+        await self.setup_database()
         self.add_view(RequestAssistanceView())
         self.add_view(IncidentControlsView())
         if GUILD_ID:
@@ -81,6 +222,11 @@ class RescueBot(commands.Bot):
         else:
             synced = await self.tree.sync()
             logger.info("Synced %s global command(s)", len(synced))
+
+    async def close(self):
+        if self.db_pool:
+            await self.db_pool.close()
+        await super().close()
 
 
 bot = RescueBot()
@@ -114,7 +260,10 @@ class RescueDetailsModal(discord.ui.Modal, title="Request Assistance"):
             overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
         if bot_member:
             overwrites[bot_member] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, read_message_history=True)
-        incident_number = next_incident_number(guild)
+
+        incident_number = await bot.allocate_incident_number(guild.id)
+        if incident_number is None:
+            incident_number = next_channel_incident_number(guild)
         incident_id = f"RESCUE-{incident_number:04d}"
         service_name = SERVICE_NAMES.get(self.service, self.service.replace("-", " ").title())
         channel = await guild.create_text_channel(
@@ -124,6 +273,18 @@ class RescueDetailsModal(discord.ui.Modal, title="Request Assistance"):
             topic=f"{incident_id} | {service_name} | Requester: {interaction.user.id}",
             reason=f"{incident_id} submitted by {interaction.user}",
         )
+
+        await bot.create_incident_record(
+            guild_id=guild.id,
+            incident_number=incident_number,
+            channel_id=channel.id,
+            requester_id=interaction.user.id,
+            callsign=str(self.callsign),
+            service=self.service,
+            location=str(self.location),
+            situation=str(self.situation),
+        )
+
         embed = discord.Embed(title=f"🚨 {incident_id} — ACTIVE RESCUE REQUEST", description="A new Star Citizen rescue incident has been opened.", color=discord.Color.red())
         embed.add_field(name="Status", value="🔴 Awaiting Responder", inline=True)
         embed.add_field(name="Primary Responder", value="Unassigned", inline=True)
@@ -135,7 +296,12 @@ class RescueDetailsModal(discord.ui.Modal, title="Request Assistance"):
         embed.set_footer(text=f"Requester ID: {interaction.user.id} | Incident: {incident_id}")
         role_mentions = " ".join(role.mention for role in roles)
         paging_text = f"🚨 **DISPATCH:** {role_mentions}" if role_mentions else "🚨 **DISPATCH:** No responder role was found."
-        await channel.send(content=f"{paging_text}\n{interaction.user.mention} your rescue channel is ready. Responders can coordinate here.", embed=embed, view=IncidentControlsView(), allowed_mentions=discord.AllowedMentions(roles=True, users=True))
+        await channel.send(
+            content=f"{paging_text}\n{interaction.user.mention} your rescue channel is ready. Responders can coordinate here.",
+            embed=embed,
+            view=IncidentControlsView(),
+            allowed_mentions=discord.AllowedMentions(roles=True, users=True),
+        )
         if missing_roles:
             await channel.send("⚠️ Test/configuration notice: I could not find the following Discord role(s): " + ", ".join(f"`{name}`" for name in missing_roles) + ". The incident was still created normally.")
         await interaction.followup.send(f"{incident_id} created: {channel.mention}", ephemeral=True)
@@ -144,6 +310,7 @@ class RescueDetailsModal(discord.ui.Modal, title="Request Assistance"):
 class ServiceSelect(discord.ui.Select):
     def __init__(self):
         super().__init__(placeholder="Select the type of assistance you need...", min_values=1, max_values=1, options=SERVICE_CHOICES, custom_id="rescue:service-select")
+
     async def callback(self, interaction):
         await interaction.response.send_modal(RescueDetailsModal(self.values[0]))
 
@@ -151,6 +318,7 @@ class ServiceSelect(discord.ui.Select):
 class RequestAssistanceView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+
     @discord.ui.button(label="Request Assistance", style=discord.ButtonStyle.danger, emoji="🚨", custom_id="rescue:request")
     async def request_assistance(self, interaction, button):
         view = discord.ui.View(timeout=120)
@@ -168,7 +336,7 @@ class IncidentControlsView(discord.ui.View):
                 embed.set_field_at(index, name=name, value=value, inline=field.inline)
                 return
 
-    async def update_status(self, interaction, status, color):
+    async def update_status(self, interaction, status, color, db_action: str | None = None):
         if not interaction.message or not interaction.message.embeds:
             await interaction.response.send_message("I could not find the incident card.", ephemeral=True)
             return
@@ -176,6 +344,8 @@ class IncidentControlsView(discord.ui.View):
         self.set_field(embed, "Status", status)
         embed.color = color
         await interaction.response.edit_message(embed=embed, view=self)
+        if db_action and interaction.channel:
+            await bot.update_incident(interaction.channel.id, db_action, interaction.user.id)
 
     @discord.ui.button(label="Respond", style=discord.ButtonStyle.success, emoji="🚀", custom_id="rescue:respond")
     async def respond(self, interaction, button):
@@ -191,19 +361,21 @@ class IncidentControlsView(discord.ui.View):
         self.set_field(embed, "Status", f"🟡 En Route — {interaction.user.mention}")
         embed.color = discord.Color.gold()
         await interaction.response.edit_message(embed=embed, view=self)
-        await interaction.followup.send(f"🚀 {interaction.user.mention} has claimed {incident_number_from_channel(interaction.channel)} and is responding.")
+        if interaction.channel:
+            await bot.update_incident(interaction.channel.id, "respond", interaction.user.id)
+        await interaction.followup.send(f"🚀 {interaction.user.mention} has claimed {incident_id_from_channel(interaction.channel)} and is responding.")
 
     @discord.ui.button(label="Arrived", style=discord.ButtonStyle.primary, emoji="📍", custom_id="rescue:arrived")
     async def arrived(self, interaction, button):
-        await self.update_status(interaction, f"🟢 On Scene — {interaction.user.mention}", discord.Color.green())
+        await self.update_status(interaction, f"🟢 On Scene — {interaction.user.mention}", discord.Color.green(), "arrived")
 
     @discord.ui.button(label="Need Backup", style=discord.ButtonStyle.secondary, emoji="🛡️", custom_id="rescue:backup")
     async def backup(self, interaction, button):
-        await self.update_status(interaction, f"🟠 Backup Requested — {interaction.user.mention}", discord.Color.orange())
-        await interaction.followup.send(f"🛡️ Backup requested for {incident_number_from_channel(interaction.channel)} by {interaction.user.mention}.")
+        await self.update_status(interaction, f"🟠 Backup Requested — {interaction.user.mention}", discord.Color.orange(), "backup")
+        await interaction.followup.send(f"🛡️ Backup requested for {incident_id_from_channel(interaction.channel)} by {interaction.user.mention}.")
 
     @discord.ui.button(label="Close Incident", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="rescue:close")
-    async def close(self, interaction, button):
+    async def close_incident(self, interaction, button):
         if not interaction.message or not interaction.message.embeds or not isinstance(interaction.channel, discord.TextChannel):
             await interaction.response.send_message("I could not close this incident.", ephemeral=True)
             return
@@ -214,7 +386,8 @@ class IncidentControlsView(discord.ui.View):
         for child in self.children:
             child.disabled = True
         await interaction.response.edit_message(embed=embed, view=self)
-        await channel.send(f"🔒 {incident_number_from_channel(channel)} closed by {interaction.user.mention}. This incident is now read-only.")
+        await bot.update_incident(channel.id, "close", interaction.user.id)
+        await channel.send(f"🔒 {incident_id_from_channel(channel)} closed by {interaction.user.mention}. This incident is now read-only.")
         requester_id = requester_id_from_embed(embed)
         if requester_id:
             requester = channel.guild.get_member(requester_id)
@@ -224,13 +397,13 @@ class IncidentControlsView(discord.ui.View):
             role = discord.utils.get(channel.guild.roles, name=role_name)
             if role and channel.permissions_for(role).view_channel:
                 await channel.set_permissions(role, view_channel=True, send_messages=False, read_message_history=True)
-        await channel.edit(name=f"closed-{channel.name}"[:100], topic=f"CLOSED | {channel.topic or incident_number_from_channel(channel)}")
+        await channel.edit(name=f"closed-{channel.name}"[:100], topic=f"CLOSED | {channel.topic or incident_id_from_channel(channel)}")
 
 
 @bot.event
 async def on_ready():
     logger.info("Logged in as %s (%s)", bot.user, bot.user.id if bot.user else "unknown")
-    logger.info("Database configured: %s", "yes" if DATABASE_URL else "no")
+    logger.info("Database: %s", "online" if bot.db_pool else ("error" if bot.db_error else "not configured"))
 
 
 @bot.tree.command(name="ping", description="Check whether the rescue bot is online.")
@@ -242,18 +415,28 @@ async def ping(interaction):
 
 @bot.tree.command(name="rescue-status", description="Show the current rescue-system status.")
 async def rescue_status(interaction):
-    embed = discord.Embed(title="Star Citizen Rescue Dispatch", description="Rescue request, sector paging, incident claiming, and controls are online.", color=discord.Color.blurple())
+    if bot.db_pool:
+        database_status = "Online"
+    elif bot.db_error:
+        database_status = "Connection Error"
+    else:
+        database_status = "Not Configured"
+    embed = discord.Embed(title="Star Citizen Rescue Dispatch", description="Rescue request, sector paging, incident claiming, persistence, and controls are online.", color=discord.Color.blurple())
     embed.add_field(name="Discord", value="Online", inline=True)
     embed.add_field(name="Incident System", value="Online", inline=True)
     embed.add_field(name="Sector Paging", value="Online", inline=True)
-    embed.add_field(name="Database", value="Configured" if DATABASE_URL else "Not attached yet", inline=True)
+    embed.add_field(name="Database", value=database_status, inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="rescue-setup", description="Post the permanent rescue request panel in this channel.")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def rescue_setup(interaction):
-    embed = discord.Embed(title="🚨 STAR CITIZEN RESCUE DISPATCH", description="Need assistance in the 'verse? Use the button below to open a rescue request.\n\nYou will choose the service you need and provide your callsign, location, and situation. A private numbered incident channel will then be created and the appropriate sector will be paged.", color=discord.Color.red())
+    embed = discord.Embed(
+        title="🚨 STAR CITIZEN RESCUE DISPATCH",
+        description="Need assistance in the 'verse? Use the button below to open a rescue request.\n\nYou will choose the service you need and provide your callsign, location, and situation. A private numbered incident channel will then be created and the appropriate sector will be paged.",
+        color=discord.Color.red(),
+    )
     embed.add_field(name="Available Services", value="🚑 Medical Rescue\n🔎 Search & Rescue\n🔧 Repair / Refuel\n🛡️ Security / Escort\n🚀 Recovery / Transport", inline=False)
     embed.set_footer(text="Star Citizen Rescue Dispatch • Emergency Assistance Network")
     try:
