@@ -42,13 +42,8 @@ SERVICE_ROLE_NAMES = {
     "recovery-transport": ["Logistics Sector", "S.E.R.E. Sector"],
 }
 
+# Requesters may choose P2 or P3. P1 is reserved for responder/management escalation.
 PRIORITY_CHOICES = [
-    discord.SelectOption(
-        label="Priority 1 — Critical",
-        value="critical",
-        emoji="🔴",
-        description="Immediate threat to life or rapidly deteriorating situation.",
-    ),
     discord.SelectOption(
         label="Priority 2 — Urgent",
         value="urgent",
@@ -180,6 +175,8 @@ class RescueBot(commands.Bot):
                         location TEXT NOT NULL,
                         situation TEXT NOT NULL,
                         priority TEXT NOT NULL DEFAULT 'standard',
+                        priority_changed_by BIGINT,
+                        priority_changed_at TIMESTAMPTZ,
                         status TEXT NOT NULL DEFAULT 'awaiting_responder',
                         primary_responder_id BIGINT,
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -194,6 +191,12 @@ class RescueBot(commands.Bot):
 
                     ALTER TABLE rescue_incidents
                     ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'standard';
+
+                    ALTER TABLE rescue_incidents
+                    ADD COLUMN IF NOT EXISTS priority_changed_by BIGINT;
+
+                    ALTER TABLE rescue_incidents
+                    ADD COLUMN IF NOT EXISTS priority_changed_at TIMESTAMPTZ;
 
                     CREATE INDEX IF NOT EXISTS rescue_incidents_guild_status_idx
                     ON rescue_incidents(guild_id, status);
@@ -285,15 +288,22 @@ class RescueBot(commands.Bot):
         except Exception:
             logger.exception("Failed to update incident %s.", channel_id)
 
-    async def update_priority(self, channel_id, priority):
+    async def update_priority(self, channel_id, priority, user_id):
         if not self.db_pool:
             return
         try:
             async with self.db_pool.acquire() as conn:
                 await conn.execute(
-                    "UPDATE rescue_incidents SET priority=$2 WHERE channel_id=$1",
+                    """
+                    UPDATE rescue_incidents
+                    SET priority=$2,
+                        priority_changed_by=$3,
+                        priority_changed_at=NOW()
+                    WHERE channel_id=$1
+                    """,
                     channel_id,
                     priority,
+                    user_id,
                 )
         except Exception:
             logger.exception("Failed to update priority for incident %s.", channel_id)
@@ -505,7 +515,7 @@ class RescueDetailsModal(discord.ui.Modal, title="Request Assistance"):
             priority=self.priority,
         )
 
-        color = discord.Color.red() if self.priority == "critical" else discord.Color.orange() if self.priority == "urgent" else discord.Color.green()
+        color = discord.Color.orange() if self.priority == "urgent" else discord.Color.green()
         embed = discord.Embed(
             title=f"🚨 {incident_id} — ACTIVE RESCUE REQUEST",
             description="A new Star Citizen rescue incident has been opened.",
@@ -532,13 +542,6 @@ class RescueDetailsModal(discord.ui.Modal, title="Request Assistance"):
             view=IncidentControlsView(),
             allowed_mentions=discord.AllowedMentions(roles=True, users=True),
         )
-        if self.priority == "critical":
-            all_roles = all_responder_roles(guild)
-            if all_roles:
-                await channel.send(
-                    "🔴 **PRIORITY 1 ALERT:** " + " ".join(role.mention for role in all_roles),
-                    allowed_mentions=discord.AllowedMentions(roles=True),
-                )
         if missing:
             await channel.send("⚠️ I could not find: " + ", ".join(f"`{name}`" for name in missing))
 
@@ -574,7 +577,7 @@ class ServiceSelect(discord.ui.Select):
         view = discord.ui.View(timeout=120)
         view.add_item(PrioritySelect(self.values[0]))
         await interaction.response.edit_message(
-            content="Now select the priority of your incident.",
+            content="Now select the priority of your incident. P1 Critical is assigned only by the primary responder or server management.",
             view=view,
         )
 
@@ -588,7 +591,7 @@ class RequestAssistanceView(discord.ui.View):
         view = discord.ui.View(timeout=120)
         view.add_item(ServiceSelect())
         await interaction.response.send_message(
-            "Select the service you need. You will choose a priority next.",
+            "Select the service you need. You will choose P2 Urgent or P3 Standard next.",
             view=view,
             ephemeral=True,
         )
@@ -626,10 +629,17 @@ class IncidentControlsView(discord.ui.View):
         await bot.refresh_dispatch_board(interaction.guild)
 
     async def change_priority(self, interaction, direction):
-        if not await self.require_responder(interaction):
-            return
         if not interaction.message or not interaction.message.embeds:
             return await interaction.response.send_message("I could not find the incident card.", ephemeral=True)
+
+        member = interaction.user if isinstance(interaction.user, discord.Member) else None
+        manager = bool(member and member.guild_permissions.manage_guild)
+        responder = is_responder(member)
+        if not responder and not manager:
+            return await interaction.response.send_message(
+                "Priority controls are limited to responder-sector members and server managers.",
+                ephemeral=True,
+            )
 
         embed = interaction.message.embeds[0].copy()
         current = priority_from_embed(embed)
@@ -644,6 +654,16 @@ class IncidentControlsView(discord.ui.View):
                 ephemeral=True,
             )
 
+        # P1 is deliberately protected: only the current primary responder or a server manager may create it.
+        if current == "urgent" and new_priority == "critical":
+            primary = primary_id_from_embed(embed)
+            if interaction.user.id != primary and not manager:
+                primary_text = f"<@{primary}>" if primary else "the assigned primary responder"
+                return await interaction.response.send_message(
+                    f"P1 Critical can only be declared by {primary_text} or someone with Manage Server permission.",
+                    ephemeral=True,
+                )
+
         self.set_field(embed, "Priority", PRIORITY_DISPLAY[new_priority])
         if new_priority == "critical":
             embed.color = discord.Color.red()
@@ -653,20 +673,23 @@ class IncidentControlsView(discord.ui.View):
             embed.color = discord.Color.green()
 
         await interaction.response.edit_message(embed=embed, view=self)
-        await bot.update_priority(interaction.channel.id, new_priority)
+        await bot.update_priority(interaction.channel.id, new_priority, interaction.user.id)
         await bot.refresh_dispatch_board(interaction.guild)
 
-        await interaction.followup.send(
-            f"⚠️ {incident_id_from_channel(interaction.channel)} priority changed to **{PRIORITY_DISPLAY[new_priority]}** by {interaction.user.mention}."
-        )
-
         if new_priority == "critical":
+            await interaction.followup.send(
+                f"🚨 **P1 CRITICAL DECLARED:** {incident_id_from_channel(interaction.channel)} was escalated to **{PRIORITY_DISPLAY[new_priority]}** by {interaction.user.mention}."
+            )
             roles = all_responder_roles(interaction.guild)
             if roles:
                 await interaction.followup.send(
-                    "🔴 **PRIORITY 1 ESCALATION:** " + " ".join(role.mention for role in roles),
+                    "🔴 **ALL-SECTOR PRIORITY 1 PAGE:** " + " ".join(role.mention for role in roles),
                     allowed_mentions=discord.AllowedMentions(roles=True),
                 )
+        else:
+            await interaction.followup.send(
+                f"⚠️ {incident_id_from_channel(interaction.channel)} priority changed to **{PRIORITY_DISPLAY[new_priority]}** by {interaction.user.mention}."
+            )
 
     @discord.ui.button(label="Respond", style=discord.ButtonStyle.success, emoji="🚀", custom_id="rescue:respond", row=0)
     async def respond(self, interaction, button):
@@ -794,13 +817,13 @@ async def rescue_status(interaction):
     database = "Online" if bot.db_pool else ("Connection Error" if bot.db_error else "Not Configured")
     embed = discord.Embed(
         title="Star Citizen Rescue Dispatch",
-        description="Rescue requests, cross-sector response, priority escalation, persistence, live dispatch board, and controls are online.",
+        description="Rescue requests, cross-sector response, safeguarded priority escalation, persistence, live dispatch board, and controls are online.",
         color=discord.Color.blurple(),
     )
     embed.add_field(name="Discord", value="Online")
     embed.add_field(name="Incident System", value="Online")
     embed.add_field(name="Sector Paging", value="Online")
-    embed.add_field(name="Priority System", value="Online")
+    embed.add_field(name="Priority System", value="Safeguarded")
     embed.add_field(name="Database", value=database)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -812,7 +835,7 @@ async def rescue_setup(interaction):
         title="🚨 STAR CITIZEN RESCUE DISPATCH",
         description=(
             "Need assistance in the 'verse? Use the button below to open a rescue request. "
-            "You will choose a service and priority before entering the incident details."
+            "You will choose a service and request priority before entering the incident details."
         ),
         color=discord.Color.red(),
     )
@@ -823,7 +846,11 @@ async def rescue_setup(interaction):
     )
     embed.add_field(
         name="Priority Levels",
-        value="🔴 P1 Critical — immediate danger\n🟠 P2 Urgent — time-sensitive\n🟢 P3 Standard — routine assistance",
+        value=(
+            "🔴 P1 Critical — responder/management escalation only\n"
+            "🟠 P2 Urgent — time-sensitive request\n"
+            "🟢 P3 Standard — routine assistance"
+        ),
         inline=False,
     )
     await interaction.response.defer(ephemeral=True)
