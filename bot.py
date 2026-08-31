@@ -144,6 +144,22 @@ def truncate(value, length):
     return value if len(value) <= length else value[: length - 1] + "…"
 
 
+def format_duration(seconds):
+    if seconds is None:
+        return "N/A"
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {seconds}s"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h {minutes}m"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h"
+
+
 class RescueBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=discord.Intents.default())
@@ -213,6 +229,12 @@ class RescueBot(commands.Bot):
                         user_id BIGINT NOT NULL,
                         joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                         PRIMARY KEY(channel_id, user_id)
+                    );
+
+                    CREATE TABLE IF NOT EXISTS rescue_log_channels (
+                        guild_id BIGINT PRIMARY KEY,
+                        channel_id BIGINT NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     );
                     """
                 )
@@ -344,6 +366,187 @@ class RescueBot(commands.Bot):
         except Exception:
             logger.exception("Failed to load active incidents.")
             return []
+
+    async def recent_closed_incidents(self, guild_id, limit=5):
+        if not self.db_pool:
+            return []
+        try:
+            async with self.db_pool.acquire() as conn:
+                return await conn.fetch(
+                    """
+                    SELECT incident_number, channel_id, requester_id, callsign, service, location,
+                           priority, primary_responder_id, created_at, responded_at, arrived_at,
+                           closed_at, closed_by_id
+                    FROM rescue_incidents
+                    WHERE guild_id=$1 AND status='closed'
+                    ORDER BY closed_at DESC NULLS LAST, incident_number DESC
+                    LIMIT $2
+                    """,
+                    guild_id,
+                    limit,
+                )
+        except Exception:
+            logger.exception("Failed to load rescue history for guild %s.", guild_id)
+            return []
+
+    async def rescue_statistics(self, guild_id):
+        if not self.db_pool:
+            return None
+        try:
+            async with self.db_pool.acquire() as conn:
+                summary = await conn.fetchrow(
+                    """
+                    SELECT
+                        COUNT(*) AS total,
+                        COUNT(*) FILTER (WHERE status <> 'closed') AS active,
+                        COUNT(*) FILTER (WHERE status = 'closed') AS closed,
+                        COUNT(*) FILTER (WHERE priority = 'critical') AS p1,
+                        COUNT(*) FILTER (WHERE priority = 'urgent') AS p2,
+                        COUNT(*) FILTER (WHERE priority = 'standard') AS p3,
+                        AVG(EXTRACT(EPOCH FROM (responded_at - created_at))) FILTER (WHERE responded_at IS NOT NULL) AS avg_response_seconds,
+                        AVG(EXTRACT(EPOCH FROM (arrived_at - created_at))) FILTER (WHERE arrived_at IS NOT NULL) AS avg_arrival_seconds,
+                        AVG(EXTRACT(EPOCH FROM (closed_at - created_at))) FILTER (WHERE closed_at IS NOT NULL) AS avg_close_seconds
+                    FROM rescue_incidents
+                    WHERE guild_id=$1
+                    """,
+                    guild_id,
+                )
+                services = await conn.fetch(
+                    """
+                    SELECT service, COUNT(*) AS count
+                    FROM rescue_incidents
+                    WHERE guild_id=$1
+                    GROUP BY service
+                    ORDER BY count DESC, service ASC
+                    """,
+                    guild_id,
+                )
+                responders = await conn.fetch(
+                    """
+                    SELECT primary_responder_id AS user_id, COUNT(*) AS count
+                    FROM rescue_incidents
+                    WHERE guild_id=$1 AND primary_responder_id IS NOT NULL
+                    GROUP BY primary_responder_id
+                    ORDER BY count DESC, primary_responder_id ASC
+                    LIMIT 5
+                    """,
+                    guild_id,
+                )
+                return summary, services, responders
+        except Exception:
+            logger.exception("Failed to calculate rescue statistics for guild %s.", guild_id)
+            return None
+
+    async def save_rescue_log_channel(self, guild_id, channel_id):
+        if not self.db_pool:
+            return
+        async with self.db_pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO rescue_log_channels(guild_id,channel_id,updated_at)
+                VALUES($1,$2,NOW())
+                ON CONFLICT(guild_id)
+                DO UPDATE SET channel_id=EXCLUDED.channel_id, updated_at=NOW()
+                """,
+                guild_id,
+                channel_id,
+            )
+
+    async def post_rescue_log(self, guild, incident_channel_id):
+        if not self.db_pool:
+            return False
+        try:
+            async with self.db_pool.acquire() as conn:
+                log_config = await conn.fetchrow(
+                    "SELECT channel_id FROM rescue_log_channels WHERE guild_id=$1",
+                    guild.id,
+                )
+                if not log_config:
+                    return False
+                incident = await conn.fetchrow(
+                    """
+                    SELECT incident_number, channel_id, requester_id, callsign, service, location,
+                           situation, priority, primary_responder_id, priority_changed_by,
+                           priority_changed_at, created_at, responded_at, arrived_at,
+                           closed_at, closed_by_id
+                    FROM rescue_incidents
+                    WHERE guild_id=$1 AND channel_id=$2
+                    """,
+                    guild.id,
+                    incident_channel_id,
+                )
+                responders = await conn.fetch(
+                    "SELECT user_id FROM rescue_incident_responders WHERE channel_id=$1 ORDER BY joined_at ASC",
+                    incident_channel_id,
+                )
+            if not incident:
+                return False
+            log_channel = guild.get_channel(log_config["channel_id"])
+            if not isinstance(log_channel, discord.TextChannel):
+                logger.warning("Configured rescue log channel is unavailable in guild %s.", guild.id)
+                return False
+
+            incident_id = f"RESCUE-{incident['incident_number']:04d}"
+            service = SERVICE_NAMES.get(incident["service"], incident["service"])
+            priority = PRIORITY_DISPLAY.get(incident["priority"], PRIORITY_DISPLAY["standard"])
+            primary = f"<@{incident['primary_responder_id']}>" if incident["primary_responder_id"] else "Unassigned"
+            responder_mentions = [f"<@{row['user_id']}>" for row in responders]
+            response_seconds = (
+                (incident["responded_at"] - incident["created_at"]).total_seconds()
+                if incident["responded_at"] else None
+            )
+            arrival_seconds = (
+                (incident["arrived_at"] - incident["created_at"]).total_seconds()
+                if incident["arrived_at"] else None
+            )
+            total_seconds = (
+                (incident["closed_at"] - incident["created_at"]).total_seconds()
+                if incident["closed_at"] else None
+            )
+
+            embed = discord.Embed(
+                title=f"📁 {incident_id} — RESCUE RECORD",
+                description="Completed rescue incident archived by Star Citizen Rescue Dispatch.",
+                color=discord.Color.dark_grey(),
+                timestamp=incident["closed_at"] or discord.utils.utcnow(),
+            )
+            embed.add_field(name="Service", value=service, inline=True)
+            embed.add_field(name="Priority", value=priority, inline=True)
+            embed.add_field(name="Callsign", value=truncate(incident["callsign"], 80), inline=True)
+            embed.add_field(name="Requester", value=f"<@{incident['requester_id']}>", inline=True)
+            embed.add_field(name="Primary Responder", value=primary, inline=True)
+            embed.add_field(name="Closed By", value=f"<@{incident['closed_by_id']}>" if incident["closed_by_id"] else "Unknown", inline=True)
+            embed.add_field(name="Location", value=truncate(incident["location"], 200), inline=False)
+            embed.add_field(name="Situation", value=truncate(incident["situation"], 500), inline=False)
+            embed.add_field(
+                name="Timing",
+                value=(
+                    f"**Claimed:** {format_duration(response_seconds)}\n"
+                    f"**On Scene:** {format_duration(arrival_seconds)}\n"
+                    f"**Total Incident:** {format_duration(total_seconds)}"
+                ),
+                inline=True,
+            )
+            embed.add_field(
+                name="Responders",
+                value=", ".join(responder_mentions) if responder_mentions else "None recorded",
+                inline=True,
+            )
+            if incident["priority_changed_by"]:
+                changed = int(incident["priority_changed_at"].timestamp()) if incident["priority_changed_at"] else None
+                priority_audit = f"Last changed by <@{incident['priority_changed_by']}>"
+                if changed:
+                    priority_audit += f" <t:{changed}:R>"
+                embed.add_field(name="Priority Audit", value=priority_audit, inline=False)
+            embed.set_footer(text=f"Database archive • Incident channel ID: {incident_channel_id}")
+            await log_channel.send(embed=embed)
+            return True
+        except discord.Forbidden:
+            logger.exception("Missing permission to post rescue log in guild %s.", guild.id)
+            return False
+        except Exception:
+            logger.exception("Failed to post rescue log in guild %s.", guild.id)
+            return False
 
     async def build_dispatch_board_embed(self, guild):
         incidents = await self.active_incidents(guild.id)
@@ -769,6 +972,7 @@ class IncidentControlsView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
         await bot.update_incident(channel.id, "close", interaction.user.id)
         await bot.refresh_dispatch_board(channel.guild)
+        await bot.post_rescue_log(channel.guild, channel.id)
         await channel.send(
             f"🔒 {incident_id_from_channel(channel)} closed by {interaction.user.mention}. This incident is now read-only."
         )
@@ -817,15 +1021,99 @@ async def rescue_status(interaction):
     database = "Online" if bot.db_pool else ("Connection Error" if bot.db_error else "Not Configured")
     embed = discord.Embed(
         title="Star Citizen Rescue Dispatch",
-        description="Rescue requests, cross-sector response, safeguarded priority escalation, persistence, live dispatch board, and controls are online.",
+        description="Rescue requests, cross-sector response, safeguarded priority escalation, history, statistics, persistence, and live dispatch are online.",
         color=discord.Color.blurple(),
     )
     embed.add_field(name="Discord", value="Online")
     embed.add_field(name="Incident System", value="Online")
     embed.add_field(name="Sector Paging", value="Online")
     embed.add_field(name="Priority System", value="Safeguarded")
+    embed.add_field(name="History & Stats", value="Online" if bot.db_pool else "Requires Database")
     embed.add_field(name="Database", value=database)
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="rescue-history", description="Show recently completed rescue incidents.")
+@app_commands.describe(limit="Number of completed incidents to show (1-10).")
+async def rescue_history(interaction: discord.Interaction, limit: app_commands.Range[int, 1, 10] = 5):
+    if interaction.guild is None:
+        return await interaction.response.send_message("Run this command inside a server.", ephemeral=True)
+    if not bot.db_pool:
+        return await interaction.response.send_message("Rescue history requires PostgreSQL to be online.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    incidents = await bot.recent_closed_incidents(interaction.guild.id, limit)
+    embed = discord.Embed(
+        title="📚 Rescue Incident History",
+        description=f"Most recent completed rescue incidents for **{interaction.guild.name}**.",
+        color=discord.Color.blurple(),
+        timestamp=discord.utils.utcnow(),
+    )
+    if not incidents:
+        embed.add_field(name="No Completed Incidents", value="No closed rescue incidents are recorded yet.", inline=False)
+    for row in incidents:
+        incident_id = f"RESCUE-{row['incident_number']:04d}"
+        priority = PRIORITY_DISPLAY.get(row["priority"], PRIORITY_DISPLAY["standard"])
+        service = SERVICE_NAMES.get(row["service"], row["service"])
+        primary = f"<@{row['primary_responder_id']}>" if row["primary_responder_id"] else "Unassigned"
+        response_seconds = (row["responded_at"] - row["created_at"]).total_seconds() if row["responded_at"] else None
+        total_seconds = (row["closed_at"] - row["created_at"]).total_seconds() if row["closed_at"] else None
+        closed_time = int(row["closed_at"].timestamp()) if row["closed_at"] else None
+        closed_text = f"<t:{closed_time}:R>" if closed_time else "Unknown"
+        embed.add_field(
+            name=f"{priority} • {incident_id}",
+            value=(
+                f"**{service}** • **Callsign:** {truncate(row['callsign'], 40)}\n"
+                f"**Location:** {truncate(row['location'], 80)}\n"
+                f"**Primary:** {primary} • **Claim:** {format_duration(response_seconds)}\n"
+                f"**Duration:** {format_duration(total_seconds)} • **Closed:** {closed_text}"
+            ),
+            inline=False,
+        )
+    embed.set_footer(text=f"Showing up to {limit} completed incidents")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="rescue-stats", description="Show rescue operation statistics from the database.")
+async def rescue_stats(interaction: discord.Interaction):
+    if interaction.guild is None:
+        return await interaction.response.send_message("Run this command inside a server.", ephemeral=True)
+    if not bot.db_pool:
+        return await interaction.response.send_message("Rescue statistics require PostgreSQL to be online.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    result = await bot.rescue_statistics(interaction.guild.id)
+    if not result:
+        return await interaction.followup.send("I could not calculate rescue statistics right now.", ephemeral=True)
+    summary, services, responders = result
+    embed = discord.Embed(
+        title="📊 Rescue Operations Statistics",
+        description=f"Database-backed operational summary for **{interaction.guild.name}**.",
+        color=discord.Color.blurple(),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(name="Total Incidents", value=str(summary["total"]), inline=True)
+    embed.add_field(name="Active", value=str(summary["active"]), inline=True)
+    embed.add_field(name="Completed", value=str(summary["closed"]), inline=True)
+    embed.add_field(name="🔴 P1 Critical", value=str(summary["p1"]), inline=True)
+    embed.add_field(name="🟠 P2 Urgent", value=str(summary["p2"]), inline=True)
+    embed.add_field(name="🟢 P3 Standard", value=str(summary["p3"]), inline=True)
+    embed.add_field(name="Avg. Claim Time", value=format_duration(summary["avg_response_seconds"]), inline=True)
+    embed.add_field(name="Avg. On-Scene Time", value=format_duration(summary["avg_arrival_seconds"]), inline=True)
+    embed.add_field(name="Avg. Incident Duration", value=format_duration(summary["avg_close_seconds"]), inline=True)
+
+    service_lines = [f"**{SERVICE_NAMES.get(row['service'], row['service'])}:** {row['count']}" for row in services]
+    embed.add_field(
+        name="Service Breakdown",
+        value="\n".join(service_lines) if service_lines else "No incident data yet.",
+        inline=False,
+    )
+    responder_lines = [f"<@{row['user_id']}> — {row['count']} primary response(s)" for row in responders]
+    embed.add_field(
+        name="Top Primary Responders",
+        value="\n".join(responder_lines) if responder_lines else "No primary responders recorded yet.",
+        inline=False,
+    )
+    embed.set_footer(text="Averages exclude incidents without the corresponding timestamp")
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="rescue-setup", description="Post the permanent rescue request panel in this channel.")
@@ -870,6 +1158,39 @@ async def dispatch_board_setup(interaction):
     message = await interaction.channel.send(embed=await bot.build_dispatch_board_embed(interaction.guild))
     await bot.save_dispatch_board(interaction.guild.id, interaction.channel.id, message.id)
     await interaction.followup.send(f"Live dispatch board created: {message.jump_url}", ephemeral=True)
+
+
+@bot.tree.command(name="rescue-log-setup", description="Use this channel as the completed rescue incident log.")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def rescue_log_setup(interaction: discord.Interaction):
+    if interaction.guild is None or not isinstance(interaction.channel, discord.TextChannel):
+        return await interaction.response.send_message("Run this command in a server text channel.", ephemeral=True)
+    if not bot.db_pool:
+        return await interaction.response.send_message("The rescue log requires PostgreSQL to be online.", ephemeral=True)
+    await bot.save_rescue_log_channel(interaction.guild.id, interaction.channel.id)
+    embed = discord.Embed(
+        title="📁 Rescue Log Configured",
+        description=(
+            "Completed incidents will be archived here automatically when they are closed. "
+            "Each record includes service, priority, responders, location, timing, and priority-audit information."
+        ),
+        color=discord.Color.green(),
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@rescue_setup.error
+@dispatch_board_setup.error
+@rescue_log_setup.error
+async def setup_command_error(interaction, error):
+    if isinstance(error, app_commands.MissingPermissions):
+        message = "You need the Manage Server permission to run this command."
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+        return
+    raise error
 
 
 def main():
