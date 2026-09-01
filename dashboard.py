@@ -7,4 +7,5 @@ import dashboard_streamline  # adds app navigation, streamlined overview, search
 import dashboard_streamline_phase2  # compacts the live incident queue and prioritizes attention calls
 import dashboard_filter_panels  # collapses optional filters on data-heavy dashboard views
 import dashboard_incident_detail  # streamlines incident command view and timeline
+import dashboard_live_refresh  # refreshes overview metrics, queue, and activity without full reloads
 from dashboard_core import app
