@@ -309,6 +309,23 @@ async def remaining_responder_ids(bot_instance, channel_id):
 
 
 class IncidentControlsViewWithLeave(core.IncidentControlsView):
+    @discord.ui.button(label="Need Backup", style=discord.ButtonStyle.secondary, emoji="🛡️", custom_id="rescue:backup", row=0)
+    async def backup(self, interaction, button):
+        if not await self.require_responder(interaction):
+            return
+        if not interaction.message or not interaction.message.embeds:
+            return await interaction.response.send_message("I could not find the incident card.", ephemeral=True)
+        embed = interaction.message.embeds[0].copy()
+        self.set_field(embed, "Status", f"🟠 Backup Requested — {interaction.user.mention}")
+        await interaction.response.edit_message(embed=embed, view=self)
+        await core.bot.update_incident(interaction.channel.id, "backup", interaction.user.id)
+        await core.bot.refresh_dispatch_board(interaction.guild)
+        roles = core.all_responder_roles(interaction.guild)
+        await interaction.followup.send(
+            "🛡️ **BACKUP REQUESTED:** " + " ".join(role.mention for role in roles),
+            allowed_mentions=discord.AllowedMentions(roles=True),
+        )
+
     @discord.ui.button(label="Leave Response", style=discord.ButtonStyle.secondary, emoji="↩️", custom_id="rescue:leave", row=1)
     async def leave_response(self, interaction, button):
         if not isinstance(interaction.channel, discord.TextChannel) or interaction.guild is None:
