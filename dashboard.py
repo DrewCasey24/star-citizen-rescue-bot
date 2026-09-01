@@ -11,5 +11,6 @@ import dashboard_live_refresh  # refreshes overview metrics, queue, and activity
 import dashboard_route_bindings  # re-registers overridden routes so FastAPI serves the latest handlers
 import dashboard_settings_status  # adds configuration health and streamlined settings sections
 import dashboard_incident_card_persistence  # remembers Discord incident card IDs for direct updates
+import dashboard_discord_consistency  # surfaces incomplete Discord synchronization after web actions
 import dashboard_error_pages  # replaces raw FastAPI/JSON failures with dashboard-styled recovery pages
 from dashboard_core import app
