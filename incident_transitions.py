@@ -1,0 +1,126 @@
+"""Atomic database transitions for Discord incident controls.
+
+Each lifecycle mutation locks the incident row and writes its ledger event in the
+same PostgreSQL transaction.  The returned result lets Discord controls reject
+stale or duplicate clicks without repeating notifications.
+"""
+
+import logging
+
+logger = logging.getLogger("star-citizen-rescue-bot.transitions")
+
+
+async def _event(conn, incident, event_type, actor_id, title, details):
+    await conn.execute(
+        """
+        INSERT INTO rescue_incident_events(
+            guild_id, incident_number, channel_id, event_type,
+            actor_id, title, details, created_at
+        ) VALUES($1,$2,$3,$4,$5,$6,$7,NOW())
+        """,
+        incident["guild_id"], incident["incident_number"], incident["channel_id"],
+        event_type, actor_id, title, details,
+    )
+
+
+async def transition_incident(bot, channel_id, action, actor_id=None):
+    """Apply one Discord lifecycle transition atomically.
+
+    Returns ``(changed, reason)``. ``changed`` is true only when this call
+    actually changed state and recorded the corresponding ledger event.
+    """
+    if not bot.db_pool:
+        return False, "database_unavailable"
+    if action not in {"respond", "arrived", "backup", "close"}:
+        return False, "invalid_action"
+
+    try:
+        async with bot.db_pool.acquire() as conn:
+            async with conn.transaction():
+                incident = await conn.fetchrow(
+                    """
+                    SELECT guild_id, incident_number, channel_id, status,
+                           primary_responder_id, responded_at, arrived_at,
+                           backup_requested_at, closed_at
+                    FROM rescue_incidents
+                    WHERE channel_id=$1
+                    FOR UPDATE
+                    """,
+                    channel_id,
+                )
+                if not incident:
+                    return False, "not_found"
+                if incident["status"] == "closed" or incident["closed_at"] is not None:
+                    return False, "closed"
+
+                if action == "respond":
+                    if actor_id is None:
+                        return False, "actor_required"
+                    if incident["primary_responder_id"] is not None:
+                        if incident["primary_responder_id"] == actor_id:
+                            return False, "already_primary"
+                        return False, "primary_already_assigned"
+                    await conn.execute(
+                        """
+                        UPDATE rescue_incidents
+                        SET status='en_route', primary_responder_id=$2,
+                            responded_at=COALESCE(responded_at,NOW())
+                        WHERE channel_id=$1
+                        """,
+                        channel_id, actor_id,
+                    )
+                    await _event(
+                        conn, incident, "primary_assigned", actor_id,
+                        "Primary Responder Assigned",
+                        "A responder accepted primary responsibility for the incident.",
+                    )
+                    return True, "responded"
+
+                if action == "arrived":
+                    if incident["primary_responder_id"] is None:
+                        return False, "no_primary"
+                    if incident["arrived_at"] is not None:
+                        return False, "already_arrived"
+                    await conn.execute(
+                        "UPDATE rescue_incidents SET status='on_scene',arrived_at=NOW() WHERE channel_id=$1",
+                        channel_id,
+                    )
+                    await _event(
+                        conn, incident, "arrived", actor_id, "Arrived On Scene",
+                        "The response team reported arrival on scene.",
+                    )
+                    return True, "arrived"
+
+                if action == "backup":
+                    if incident["primary_responder_id"] is None:
+                        return False, "no_primary"
+                    if incident["backup_requested_at"] is not None:
+                        return False, "backup_already_requested"
+                    await conn.execute(
+                        "UPDATE rescue_incidents SET status='backup_requested',backup_requested_at=NOW() WHERE channel_id=$1",
+                        channel_id,
+                    )
+                    await _event(
+                        conn, incident, "backup_requested", actor_id,
+                        "Backup Requested", "Additional responder support was requested.",
+                    )
+                    return True, "backup_requested"
+
+                if actor_id is None:
+                    return False, "actor_required"
+                await conn.execute(
+                    """
+                    UPDATE rescue_incidents
+                    SET status='closed',closed_at=NOW(),closed_by_id=$2
+                    WHERE channel_id=$1
+                    """,
+                    channel_id, actor_id,
+                )
+                await _event(
+                    conn, incident, "closed", actor_id, "Incident Closed",
+                    "The incident was closed by an authorized user.",
+                )
+                return True, "closed_now"
+    except Exception:
+        logger.exception("Atomic incident transition failed: channel=%s action=%s", channel_id, action)
+        return False, "database_error"
