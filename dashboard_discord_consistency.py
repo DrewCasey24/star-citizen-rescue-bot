@@ -62,6 +62,31 @@ async def _sync_incident_card(incident, incident_number, actor_id=None, close_co
     return True
 
 
+def _merged_read_only_overwrite(channel, overwrite_id, overwrite_type):
+    """Preserve an existing overwrite while adding read access and denying sends."""
+    existing = next(
+        (
+            value for value in channel.get("permission_overwrites", [])
+            if str(value.get("id")) == str(overwrite_id)
+            and int(value.get("type", -1)) == int(overwrite_type)
+        ),
+        None,
+    )
+    allow = int(existing.get("allow", "0")) if existing else 0
+    deny = int(existing.get("deny", "0")) if existing else 0
+
+    # VIEW_CHANNEL (1024) + READ_MESSAGE_HISTORY (65536).
+    required_allow = 1024 | 65536
+    # SEND_MESSAGES (2048). Remove it from allow before explicitly denying it.
+    send_messages = 2048
+    allow |= required_allow
+    allow &= ~send_messages
+    deny |= send_messages
+    # An explicit deny for permissions we need to grant would defeat the read-only archive.
+    deny &= ~required_allow
+    return {"type": overwrite_type, "allow": str(allow), "deny": str(deny)}
+
+
 async def _sync_closed_channel(guild_id, incident):
     channel_id = incident["channel_id"]
     if not channel_id: return False
@@ -69,10 +94,10 @@ async def _sync_closed_channel(guild_id, incident):
     name = channel.get("name", "rescue-incident")
     topic = channel.get("topic") or f"RESCUE-{incident['incident_number']:04d}"
     await base.discord_patch(f"/channels/{channel_id}", {"name": (name if name.startswith("closed-") else f"closed-{name}")[:100], "topic": topic if topic.startswith("CLOSED |") else f"CLOSED | {topic}"})
-    allow_read, deny_send = str(1024 | 65536), str(2048)
     targets = [(int(incident["requester_id"]), 1)] + [(rid, 0) for rid in await base.responder_role_ids_for_guild(guild_id)]
     for overwrite_id, overwrite_type in targets:
-        await base.discord_put(f"/channels/{channel_id}/permissions/{overwrite_id}", {"type": overwrite_type, "allow": allow_read, "deny": deny_send})
+        payload = _merged_read_only_overwrite(channel, overwrite_id, overwrite_type)
+        await base.discord_put(f"/channels/{channel_id}/permissions/{overwrite_id}", payload)
     return True
 
 
