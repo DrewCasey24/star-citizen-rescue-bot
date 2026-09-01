@@ -41,6 +41,10 @@ STREAMLINE_CSS = r'''
 
 
 def _guild_id_from_body(body):
+    # The root server-selection page contains links to every accessible guild.
+    # It is not a guild-scoped page, so never infer a sidebar from those links.
+    if "Select a server" in body:
+        return None
     match = re.search(r'(?:href|action)="/guild/(\d+)', body)
     return match.group(1) if match else None
 
