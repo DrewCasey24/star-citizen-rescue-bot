@@ -13,4 +13,4 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m py_compile bot.py run_bot.py dashboard_core.py dashboard.py dashboard_performance.py dashboard_service_rankings.py dashboard_history.py dashboard_theme.py dashboard_streamline.py dashboard_streamline_phase2.py dashboard_filter_panels.py dashboard_incident_detail.py dashboard_extensions.py
+      - run: python -m py_compile bot.py run_bot.py dashboard_core.py dashboard.py dashboard_performance.py dashboard_service_rankings.py dashboard_history.py dashboard_theme.py dashboard_streamline.py dashboard_streamline_phase2.py dashboard_filter_panels.py dashboard_incident_detail.py dashboard_live_refresh.py dashboard_extensions.py
