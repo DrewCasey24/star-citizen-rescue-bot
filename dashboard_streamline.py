@@ -53,7 +53,7 @@ def streamlined_page(title, body, user=None):
 
     markup = response.body.decode("utf-8")
     sidebar = f'''<aside class="sidebar"><div class="sidebar-title">Operations</div><nav class="sidebar-nav">
-<a href="/guild/{guild_id}">◫ Overview</a><a href="/guild/{guild_id}#active">◉ Active Incidents</a><a href="/guild/{guild_id}/history">⌕ History</a><div class="divider"></div><a href="/guild/{guild_id}/performance">▥ Performance</a><a href="/guild/{guild_id}/service-rankings">≡ Service Rankings</a><div class="divider"></div><a href="/guild/{guild_id}/settings">⚙ Settings</a><a href="/">↩ Servers</a></nav></aside>'''
+<a href="/guild/{guild_id}">◫ Overview</a><a href="/guild/{guild_id}#active">◉ Active Incidents</a><a href="/guild/{guild_id}/history">⌕ History</a><div class="divider"></div><a href="/guild/{guild_id}/performance">▥ Performance</a><a href="/guild/{guild_id}/performance/services">≡ Service Rankings</a><div class="divider"></div><a href="/guild/{guild_id}/settings">⚙ Settings</a><a href="/">↩ Servers</a></nav></aside>'''
     search = f'''<form class="global-search" method="get" action="/guild/{guild_id}/find"><input type="search" name="q" aria-label="Find incident" placeholder="Find RESCUE-0042 or callsign"><button class="btn secondary" type="submit">Find</button></form>'''
 
     markup = markup.replace("</style>", STREAMLINE_CSS + "\n</style>", 1)
