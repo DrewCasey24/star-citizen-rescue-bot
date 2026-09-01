@@ -1,4 +1,5 @@
 import html
+import re
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, Request
@@ -7,6 +8,7 @@ from fastapi.responses import HTMLResponse
 import dashboard as base
 
 app = base.app
+_original_page = base.page
 
 
 def esc(value):
@@ -25,6 +27,25 @@ def parse_date(value, end=False):
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid performance date filter.")
     return result + timedelta(days=1) if end else result
+
+
+def page_with_performance_link(title, body, user=None):
+    """Inject a persistent Responder Performance link into dashboard navigation."""
+    if 'class="section-nav"' in body and '/performance' not in body:
+        match = re.search(r'href="/guild/(\d+)', body)
+        if match:
+            guild_id = match.group(1)
+            body = body.replace(
+                '<div class="section-nav">',
+                f'<div class="section-nav"><a href="/guild/{guild_id}/performance">Responder Performance</a>',
+                1,
+            )
+    return _original_page(title, body, user)
+
+
+# dashboard.py route functions resolve this module global at request time, so patching
+# the page renderer reliably adds the navigation link without replacing route internals.
+base.page = page_with_performance_link
 
 
 @app.get("/guild/{guild_id}/performance", response_class=HTMLResponse)
@@ -131,7 +152,14 @@ async def responder_performance(
         )
 
     names = await base.member_names(guild_id, list(stats))
-    ranked = sorted(stats.items(), key=lambda pair: (-pair[1].get("total_calls", 0), -pair[1].get("primary_calls", 0), names.get(pair[0], "").lower()))
+    ranked = sorted(
+        stats.items(),
+        key=lambda pair: (
+            -pair[1].get("total_calls", 0),
+            -pair[1].get("primary_calls", 0),
+            names.get(pair[0], "").lower(),
+        ),
+    )
     rows_html = "".join(
         f'''<tr><td><strong>{esc(names.get(uid, "Discord User"))}</strong></td><td>{s.get("total_calls",0)}</td><td>{s.get("primary_calls",0)}</td><td>{max(0,s.get("total_calls",0)-s.get("primary_calls",0))}</td><td>{s.get("withdrawals",0)}</td><td>{fmt_duration(s.get("avg_claim"))}</td><td>{fmt_duration(s.get("avg_scene"))}</td></tr>'''
         for uid, s in ranked
@@ -142,23 +170,3 @@ async def responder_performance(
 <div class="grid" style="margin-top:16px"><div class="card span3"><div class="label">Incidents</div><div class="metric">{int(summary['incidents'] or 0)}</div></div><div class="card span3"><div class="label">Completed</div><div class="metric">{int(summary['completed'] or 0)}</div></div><div class="card span3"><div class="label">Avg Claim</div><div class="metric">{fmt_duration(summary['avg_claim'])}</div></div><div class="card span3"><div class="label">Avg On Scene</div><div class="metric">{fmt_duration(summary['avg_scene'])}</div></div>
 <div class="card span12"><h2>Responder Activity</h2><p class="muted">Total Responses counts distinct incidents in which the member served as primary or support. Withdrawals are preserved from the permanent event ledger.</p><div style="overflow:auto"><table><thead><tr><th>Responder</th><th>Total Responses</th><th>Primary</th><th>Support</th><th>Withdrawals</th><th>Avg Claim</th><th>Avg On Scene</th></tr></thead><tbody>{rows_html}</tbody></table></div></div></div>'''
     return base.page(f"Responder Performance · {guild_info['name']}", body, base.current_user(request))
-
-
-# Add a Performance link to the existing server dashboard without duplicating its implementation.
-for route in app.routes:
-    if getattr(route, "path", None) == "/guild/{guild_id}" and "GET" in getattr(route, "methods", set()):
-        original_endpoint = route.endpoint
-
-        async def dashboard_with_performance_link(request: Request, guild_id: int, saved: int = 0, _original=original_endpoint):
-            response = await _original(request, guild_id, saved)
-            if isinstance(response, HTMLResponse):
-                text = response.body.decode("utf-8")
-                marker = f'<a href="/guild/{guild_id}/history">Search History</a>'
-                replacement = marker + f'<a href="/guild/{guild_id}/performance">Responder Performance</a>'
-                if marker in text and f'/guild/{guild_id}/performance' not in text:
-                    response.body = text.replace(marker, replacement, 1).encode("utf-8")
-                    response.headers["content-length"] = str(len(response.body))
-            return response
-
-        route.endpoint = dashboard_with_performance_link
-        break
