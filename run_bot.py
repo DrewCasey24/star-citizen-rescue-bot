@@ -167,13 +167,8 @@ async def record_incident_event(self, channel_id, event_type, title, details="",
                     actor_id, title, details, created_at
                 ) VALUES($1,$2,$3,$4,$5,$6,$7,NOW())
                 """,
-                incident["guild_id"],
-                incident["incident_number"],
-                channel_id,
-                event_type,
-                actor_id,
-                title,
-                details,
+                incident["guild_id"], incident["incident_number"], channel_id,
+                event_type, actor_id, title, details,
             )
     except Exception:
         logger.exception("Failed to append incident event %s for channel %s.", event_type, channel_id)
@@ -182,10 +177,7 @@ async def record_incident_event(self, channel_id, event_type, title, details="",
 async def create_incident_record_with_ledger(self, **values):
     await _original_create_incident_record(self, **values)
     await record_incident_event(
-        self,
-        values["channel_id"],
-        "created",
-        "Incident Created",
+        self, values["channel_id"], "created", "Incident Created",
         f"{core.SERVICE_NAMES.get(values['service'], values['service'])} request opened at {values['location']}.",
         values["requester_id"],
     )
@@ -202,9 +194,7 @@ async def update_incident_with_ledger(self, channel_id, action, user_id=None):
                 )
         except Exception:
             logger.exception("Failed to read incident before ledger update.")
-
     await _original_update_incident(self, channel_id, action, user_id)
-
     after = None
     if self.db_pool:
         try:
@@ -215,10 +205,8 @@ async def update_incident_with_ledger(self, channel_id, action, user_id=None):
                 )
         except Exception:
             logger.exception("Failed to read incident after ledger update.")
-
     if not after:
         return
-
     if action == "respond" and (not before or before["primary_responder_id"] != after["primary_responder_id"]):
         await record_incident_event(self, channel_id, "primary_assigned", "Primary Responder Assigned", "A responder accepted primary responsibility for the incident.", user_id)
     elif action == "arrived" and after["arrived_at"] and (not before or before["arrived_at"] is None):
@@ -237,20 +225,11 @@ async def update_priority_with_ledger(self, channel_id, priority, user_id):
                 previous = await conn.fetchval("SELECT priority FROM rescue_incidents WHERE channel_id=$1", channel_id)
         except Exception:
             logger.exception("Failed to read priority before ledger update.")
-
     await _original_update_priority(self, channel_id, priority, user_id)
-
     if previous is not None and previous != priority:
         old_label = core.PRIORITY_DISPLAY.get(previous, previous)
         new_label = core.PRIORITY_DISPLAY.get(priority, priority)
-        await record_incident_event(
-            self,
-            channel_id,
-            "priority_changed",
-            "Priority Changed",
-            f"Priority changed from {old_label} to {new_label}.",
-            user_id,
-        )
+        await record_incident_event(self, channel_id, "priority_changed", "Priority Changed", f"Priority changed from {old_label} to {new_label}.", user_id)
 
 
 async def add_responder_with_ledger(self, channel_id, user_id):
@@ -258,128 +237,88 @@ async def add_responder_with_ledger(self, channel_id, user_id):
     if self.db_pool:
         try:
             async with self.db_pool.acquire() as conn:
-                existed = bool(
-                    await conn.fetchval(
-                        "SELECT 1 FROM rescue_incident_responders WHERE channel_id=$1 AND user_id=$2",
-                        channel_id,
-                        user_id,
-                    )
-                )
+                existed = bool(await conn.fetchval(
+                    "SELECT 1 FROM rescue_incident_responders WHERE channel_id=$1 AND user_id=$2", channel_id, user_id
+                ))
         except Exception:
             logger.exception("Failed to inspect responder before ledger update.")
-
     await _original_add_responder(self, channel_id, user_id)
     if not existed:
         primary_id = None
         if self.db_pool:
             try:
                 async with self.db_pool.acquire() as conn:
-                    primary_id = await conn.fetchval(
-                        "SELECT primary_responder_id FROM rescue_incidents WHERE channel_id=$1",
-                        channel_id,
-                    )
+                    primary_id = await conn.fetchval("SELECT primary_responder_id FROM rescue_incidents WHERE channel_id=$1", channel_id)
             except Exception:
                 logger.exception("Failed to inspect primary responder after responder join.")
         if primary_id != user_id:
-            await record_incident_event(
-                self,
-                channel_id,
-                "responder_joined",
-                "Responder Joined",
-                "An additional responder joined the response team.",
-                user_id,
-            )
+            await record_incident_event(self, channel_id, "responder_joined", "Responder Joined", "An additional responder joined the response team.", user_id)
 
 
 async def remove_responder_with_ledger(self, channel_id, user_id):
     """Remove a responder from the active response and return (removed, was_primary)."""
     if not self.db_pool:
         return False, False
-
     removed = False
     was_primary = False
     try:
         async with self.db_pool.acquire() as conn:
             async with conn.transaction():
                 incident = await conn.fetchrow(
-                    "SELECT status,primary_responder_id FROM rescue_incidents WHERE channel_id=$1 FOR UPDATE",
-                    channel_id,
+                    "SELECT status,primary_responder_id FROM rescue_incidents WHERE channel_id=$1 FOR UPDATE", channel_id
                 )
                 if not incident or incident["status"] == "closed":
                     return False, False
-
-                listed = bool(
-                    await conn.fetchval(
-                        "SELECT 1 FROM rescue_incident_responders WHERE channel_id=$1 AND user_id=$2",
-                        channel_id,
-                        user_id,
-                    )
-                )
+                listed = bool(await conn.fetchval(
+                    "SELECT 1 FROM rescue_incident_responders WHERE channel_id=$1 AND user_id=$2", channel_id, user_id
+                ))
                 was_primary = incident["primary_responder_id"] == user_id
                 if not listed and not was_primary:
                     return False, False
-
-                await conn.execute(
-                    "DELETE FROM rescue_incident_responders WHERE channel_id=$1 AND user_id=$2",
-                    channel_id,
-                    user_id,
-                )
+                await conn.execute("DELETE FROM rescue_incident_responders WHERE channel_id=$1 AND user_id=$2", channel_id, user_id)
                 if was_primary:
                     await conn.execute(
-                        "UPDATE rescue_incidents SET primary_responder_id=NULL,status='awaiting_responder' WHERE channel_id=$1",
-                        channel_id,
+                        "UPDATE rescue_incidents SET primary_responder_id=NULL,status='awaiting_responder' WHERE channel_id=$1", channel_id
                     )
                 removed = True
     except Exception:
         logger.exception("Failed to remove responder %s from incident channel %s.", user_id, channel_id)
         return False, False
-
     if removed:
         details = (
             "The primary responder left the response; the incident returned to Awaiting Responder."
-            if was_primary
-            else "A support responder left the active response team."
+            if was_primary else "A support responder left the active response team."
         )
-        await record_incident_event(
-            self,
-            channel_id,
-            "responder_left",
-            "Responder Left Response",
-            details,
-            user_id,
-        )
+        await record_incident_event(self, channel_id, "responder_left", "Responder Left Response", details, user_id)
     return removed, was_primary
 
 
+async def remaining_responder_ids(bot_instance, channel_id):
+    if not bot_instance.db_pool:
+        return []
+    try:
+        async with bot_instance.db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT user_id FROM rescue_incident_responders WHERE channel_id=$1 ORDER BY joined_at ASC",
+                channel_id,
+            )
+        return [row["user_id"] for row in rows]
+    except Exception:
+        logger.exception("Failed to load remaining responders for incident channel %s.", channel_id)
+        return []
+
+
 class IncidentControlsViewWithLeave(core.IncidentControlsView):
-    @discord.ui.button(
-        label="Leave Response",
-        style=discord.ButtonStyle.secondary,
-        emoji="↩️",
-        custom_id="rescue:leave",
-        row=1,
-    )
+    @discord.ui.button(label="Leave Response", style=discord.ButtonStyle.secondary, emoji="↩️", custom_id="rescue:leave", row=1)
     async def leave_response(self, interaction, button):
         if not isinstance(interaction.channel, discord.TextChannel) or interaction.guild is None:
-            return await interaction.response.send_message(
-                "This control is only available inside an active rescue incident channel.",
-                ephemeral=True,
-            )
+            return await interaction.response.send_message("This control is only available inside an active rescue incident channel.", ephemeral=True)
         if not core.bot.db_pool:
-            return await interaction.response.send_message(
-                "Responder withdrawal requires the rescue database to be online.",
-                ephemeral=True,
-            )
+            return await interaction.response.send_message("Responder withdrawal requires the rescue database to be online.", ephemeral=True)
 
-        removed, was_primary = await core.bot.remove_responder(
-            interaction.channel.id,
-            interaction.user.id,
-        )
+        removed, was_primary = await core.bot.remove_responder(interaction.channel.id, interaction.user.id)
         if not removed:
-            return await interaction.response.send_message(
-                "You are not currently listed as a responder on this incident.",
-                ephemeral=True,
-            )
+            return await interaction.response.send_message("You are not currently listed as a responder on this incident.", ephemeral=True)
 
         incident_id = core.incident_id_from_channel(interaction.channel)
         if was_primary and interaction.message and interaction.message.embeds:
@@ -394,13 +333,18 @@ class IncidentControlsViewWithLeave(core.IncidentControlsView):
             else:
                 embed.color = discord.Color.green()
             await interaction.response.edit_message(embed=embed, view=self)
+
+            remaining = await remaining_responder_ids(core.bot, interaction.channel.id)
+            remaining_text = ", ".join(f"<@{user_id}>" for user_id in remaining) if remaining else "None"
             await interaction.followup.send(
-                f"↩️ {interaction.user.mention} left the response and released primary responsibility for {incident_id}. The incident is awaiting a new primary responder."
+                f"⚠️ **PRIMARY RESPONDER WITHDREW**\n"
+                f"{interaction.user.mention} released primary responsibility for **{incident_id}**.\n"
+                f"**Remaining responders:** {remaining_text}\n"
+                f"**A new primary responder is required.** Use **Respond** to accept primary responsibility.",
+                allowed_mentions=discord.AllowedMentions(users=True),
             )
         else:
-            await interaction.response.send_message(
-                f"↩️ {interaction.user.mention} left the response for {incident_id}."
-            )
+            await interaction.response.send_message(f"↩️ {interaction.user.mention} left the response for {incident_id}.")
 
         await core.bot.refresh_dispatch_board(interaction.guild)
 
@@ -419,7 +363,6 @@ async def setup_database_with_dashboard(self):
                 incident_category_id BIGINT,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
-
             CREATE TABLE IF NOT EXISTS rescue_service_role_settings (
                 guild_id BIGINT NOT NULL,
                 service TEXT NOT NULL,
@@ -427,7 +370,6 @@ async def setup_database_with_dashboard(self):
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 PRIMARY KEY(guild_id, service)
             );
-
             CREATE TABLE IF NOT EXISTS rescue_incident_events (
                 id BIGSERIAL PRIMARY KEY,
                 guild_id BIGINT NOT NULL,
@@ -439,7 +381,6 @@ async def setup_database_with_dashboard(self):
                 details TEXT NOT NULL DEFAULT '',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
-
             CREATE INDEX IF NOT EXISTS rescue_incident_events_incident_idx
             ON rescue_incident_events(guild_id, incident_number, created_at, id);
             """
@@ -452,10 +393,8 @@ async def setup_hook_multi_guild(self):
     await self.setup_database()
     self.add_view(core.RequestAssistanceView())
     self.add_view(core.IncidentControlsView())
-
     await self.tree.sync()
     logger.info("Global application commands synced for multi-guild operation.")
-
     if self.db_pool and not getattr(self, "_dashboard_config_task", None):
         self._dashboard_config_task = asyncio.create_task(config_refresh_loop(self))
 
@@ -469,11 +408,7 @@ async def close_with_dashboard(self):
 
 async def dynamic_request_submit(self, interaction):
     if interaction.guild is None:
-        return await interaction.response.send_message(
-            "Rescue requests must be submitted inside a server.",
-            ephemeral=True,
-        )
-
+        return await interaction.response.send_message("Rescue requests must be submitted inside a server.", ephemeral=True)
     await interaction.response.defer(ephemeral=True, thinking=True)
     guild = interaction.guild
     config = CONFIG_CACHE.get(guild.id, {})
@@ -484,10 +419,7 @@ async def dynamic_request_submit(self, interaction):
         if isinstance(candidate, discord.CategoryChannel):
             category = candidate
     if category is None:
-        category = discord.utils.get(guild.categories, name="Active Incidents") or await guild.create_category(
-            "Active Incidents",
-            reason="Star Citizen rescue dispatch setup",
-        )
+        category = discord.utils.get(guild.categories, name="Active Incidents") or await guild.create_category("Active Incidents", reason="Star Citizen rescue dispatch setup")
 
     paged_roles, missing = configured_responder_roles(guild, self.service)
     bot_member = guild.me
@@ -495,71 +427,40 @@ async def dynamic_request_submit(self, interaction):
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
         interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
     }
-
     for role in configured_all_responder_roles(guild):
         overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
     if bot_member:
-        overwrites[bot_member] = discord.PermissionOverwrite(
-            view_channel=True,
-            send_messages=True,
-            manage_channels=True,
-            read_message_history=True,
-        )
+        overwrites[bot_member] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, read_message_history=True)
 
     number = await core.bot.allocate_incident_number(guild.id) or core.next_channel_incident_number(guild)
     incident_id = f"RESCUE-{number:04d}"
     service = core.SERVICE_NAMES.get(self.service, self.service)
     priority_display = core.PRIORITY_DISPLAY.get(self.priority, core.PRIORITY_DISPLAY["standard"])
-
     channel = await guild.create_text_channel(
-        f"rescue-{number:04d}-{core.safe_channel_name(str(self.callsign))}",
-        category=category,
-        overwrites=overwrites,
+        f"rescue-{number:04d}-{core.safe_channel_name(str(self.callsign))}", category=category, overwrites=overwrites,
         topic=f"{incident_id} | {priority_display} | {service} | Requester: {interaction.user.id}",
     )
-
     await core.bot.create_incident_record(
-        guild_id=guild.id,
-        incident_number=number,
-        channel_id=channel.id,
-        requester_id=interaction.user.id,
-        callsign=str(self.callsign),
-        service=self.service,
-        location=str(self.location),
-        situation=str(self.situation),
-        priority=self.priority,
+        guild_id=guild.id, incident_number=number, channel_id=channel.id, requester_id=interaction.user.id,
+        callsign=str(self.callsign), service=self.service, location=str(self.location), situation=str(self.situation), priority=self.priority,
     )
-
     color = discord.Color.orange() if self.priority == "urgent" else discord.Color.green()
-    embed = discord.Embed(
-        title=f"🚨 {incident_id} — ACTIVE RESCUE REQUEST",
-        description="A new Star Citizen rescue incident has been opened.",
-        color=color,
-    )
+    embed = discord.Embed(title=f"🚨 {incident_id} — ACTIVE RESCUE REQUEST", description="A new Star Citizen rescue incident has been opened.", color=color)
     fields = [
-        ("Priority", priority_display, True),
-        ("Status", "🔴 Awaiting Responder", True),
-        ("Primary Responder", "Unassigned", True),
-        ("Service", service, True),
-        ("Requester", interaction.user.mention, True),
-        ("Callsign", str(self.callsign), True),
-        ("Location", str(self.location), False),
-        ("Situation", str(self.situation), False),
+        ("Priority", priority_display, True), ("Status", "🔴 Awaiting Responder", True), ("Primary Responder", "Unassigned", True),
+        ("Service", service, True), ("Requester", interaction.user.mention, True), ("Callsign", str(self.callsign), True),
+        ("Location", str(self.location), False), ("Situation", str(self.situation), False),
     ]
     for name, value, inline in fields:
         embed.add_field(name=name, value=value, inline=inline)
     embed.set_footer(text=f"Requester ID: {interaction.user.id} | Incident: {incident_id}")
-
     mentions = " ".join(role.mention for role in paged_roles)
     await channel.send(
         content=f"🚨 **DISPATCH:** {mentions or 'No responder role was found.'}\n{interaction.user.mention} your rescue channel is ready.",
-        embed=embed,
-        view=core.IncidentControlsView(),
-        allowed_mentions=discord.AllowedMentions(roles=True, users=True),
+        embed=embed, view=core.IncidentControlsView(), allowed_mentions=discord.AllowedMentions(roles=True, users=True),
     )
     if missing:
         await channel.send("⚠️ I could not find: " + ", ".join(f"`{name}`" for name in missing))
-
     await core.bot.refresh_dispatch_board(guild)
     await interaction.followup.send(f"{incident_id} created: {channel.mention}", ephemeral=True)
 
