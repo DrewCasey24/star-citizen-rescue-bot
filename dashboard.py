@@ -9,4 +9,5 @@ import dashboard_filter_panels  # collapses optional filters on data-heavy dashb
 import dashboard_incident_detail  # streamlines incident command view and timeline
 import dashboard_live_refresh  # refreshes overview metrics, queue, and activity without full reloads
 import dashboard_route_bindings  # re-registers overridden routes so FastAPI serves the latest handlers
+import dashboard_settings_status  # adds configuration health and streamlined settings sections
 from dashboard_core import app
