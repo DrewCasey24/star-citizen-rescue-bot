@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 
 import discord
 
@@ -8,6 +9,23 @@ import bot as core
 logger = logging.getLogger("star-citizen-rescue-bot.config")
 
 CONFIG_CACHE = {}
+DASHBOARD_PUBLIC_URL = os.getenv(
+    "DASHBOARD_PUBLIC_URL",
+    "https://dashboard-production-c2b3.up.railway.app",
+).rstrip("/")
+
+
+def dispatch_board_view():
+    view = discord.ui.View(timeout=None)
+    view.add_item(
+        discord.ui.Button(
+            label="Open Web Dashboard",
+            style=discord.ButtonStyle.link,
+            emoji="🌐",
+            url=DASHBOARD_PUBLIC_URL,
+        )
+    )
+    return view
 
 
 async def refresh_config_cache(bot_instance):
@@ -105,6 +123,29 @@ _original_create_incident_record = core.RescueBot.create_incident_record
 _original_update_incident = core.RescueBot.update_incident
 _original_update_priority = core.RescueBot.update_priority
 _original_add_responder = core.RescueBot.add_responder
+_original_refresh_dispatch_board = core.RescueBot.refresh_dispatch_board
+
+
+async def refresh_dispatch_board_with_dashboard(self, guild):
+    refreshed = await _original_refresh_dispatch_board(self, guild)
+    if not refreshed or not self.db_pool:
+        return refreshed
+    try:
+        async with self.db_pool.acquire() as conn:
+            board = await conn.fetchrow(
+                "SELECT channel_id,message_id FROM rescue_dispatch_boards WHERE guild_id=$1",
+                guild.id,
+            )
+        if not board:
+            return refreshed
+        channel = guild.get_channel(board["channel_id"])
+        if not isinstance(channel, discord.TextChannel):
+            return refreshed
+        message = await channel.fetch_message(board["message_id"])
+        await message.edit(view=dispatch_board_view())
+    except Exception:
+        logger.exception("Failed to attach web dashboard button to dispatch board.")
+    return refreshed
 
 
 async def record_incident_event(self, channel_id, event_type, title, details="", actor_id=None):
@@ -398,6 +439,7 @@ core.RescueBot.create_incident_record = create_incident_record_with_ledger
 core.RescueBot.update_incident = update_incident_with_ledger
 core.RescueBot.update_priority = update_priority_with_ledger
 core.RescueBot.add_responder = add_responder_with_ledger
+core.RescueBot.refresh_dispatch_board = refresh_dispatch_board_with_dashboard
 core.responder_roles = configured_responder_roles
 core.all_responder_roles = configured_all_responder_roles
 core.is_responder = configured_is_responder
