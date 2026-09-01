@@ -163,7 +163,10 @@ def modern_page(title, body, user=None):
         '<div class="brand"><div class="brand-mark">✦</div><div class="brand-copy"><h1>Star Citizen Rescue Dispatch</h1><small>Operations Command</small></div></div>',
         1,
     )
-    return HTMLResponse(markup, status_code=response.status_code, headers=dict(response.headers))
+    # Build a fresh response so Starlette recalculates Content-Length for the
+    # larger themed markup. Reusing the original response headers preserves the
+    # old Content-Length and can make the proxy report an upstream error.
+    return HTMLResponse(markup, status_code=response.status_code)
 
 
 base.page = modern_page
