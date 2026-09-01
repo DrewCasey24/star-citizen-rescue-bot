@@ -270,7 +270,139 @@ async def add_responder_with_ledger(self, channel_id, user_id):
 
     await _original_add_responder(self, channel_id, user_id)
     if not existed:
-        await record_incident_event(self, channel_id, "responder_joined", "Responder Joined", "An additional responder joined the response team.", user_id)
+        primary_id = None
+        if self.db_pool:
+            try:
+                async with self.db_pool.acquire() as conn:
+                    primary_id = await conn.fetchval(
+                        "SELECT primary_responder_id FROM rescue_incidents WHERE channel_id=$1",
+                        channel_id,
+                    )
+            except Exception:
+                logger.exception("Failed to inspect primary responder after responder join.")
+        if primary_id != user_id:
+            await record_incident_event(
+                self,
+                channel_id,
+                "responder_joined",
+                "Responder Joined",
+                "An additional responder joined the response team.",
+                user_id,
+            )
+
+
+async def remove_responder_with_ledger(self, channel_id, user_id):
+    """Remove a responder from the active response and return (removed, was_primary)."""
+    if not self.db_pool:
+        return False, False
+
+    removed = False
+    was_primary = False
+    try:
+        async with self.db_pool.acquire() as conn:
+            async with conn.transaction():
+                incident = await conn.fetchrow(
+                    "SELECT status,primary_responder_id FROM rescue_incidents WHERE channel_id=$1 FOR UPDATE",
+                    channel_id,
+                )
+                if not incident or incident["status"] == "closed":
+                    return False, False
+
+                listed = bool(
+                    await conn.fetchval(
+                        "SELECT 1 FROM rescue_incident_responders WHERE channel_id=$1 AND user_id=$2",
+                        channel_id,
+                        user_id,
+                    )
+                )
+                was_primary = incident["primary_responder_id"] == user_id
+                if not listed and not was_primary:
+                    return False, False
+
+                await conn.execute(
+                    "DELETE FROM rescue_incident_responders WHERE channel_id=$1 AND user_id=$2",
+                    channel_id,
+                    user_id,
+                )
+                if was_primary:
+                    await conn.execute(
+                        "UPDATE rescue_incidents SET primary_responder_id=NULL,status='awaiting_responder' WHERE channel_id=$1",
+                        channel_id,
+                    )
+                removed = True
+    except Exception:
+        logger.exception("Failed to remove responder %s from incident channel %s.", user_id, channel_id)
+        return False, False
+
+    if removed:
+        details = (
+            "The primary responder left the response; the incident returned to Awaiting Responder."
+            if was_primary
+            else "A support responder left the active response team."
+        )
+        await record_incident_event(
+            self,
+            channel_id,
+            "responder_left",
+            "Responder Left Response",
+            details,
+            user_id,
+        )
+    return removed, was_primary
+
+
+class IncidentControlsViewWithLeave(core.IncidentControlsView):
+    @discord.ui.button(
+        label="Leave Response",
+        style=discord.ButtonStyle.secondary,
+        emoji="↩️",
+        custom_id="rescue:leave",
+        row=1,
+    )
+    async def leave_response(self, interaction, button):
+        if not isinstance(interaction.channel, discord.TextChannel) or interaction.guild is None:
+            return await interaction.response.send_message(
+                "This control is only available inside an active rescue incident channel.",
+                ephemeral=True,
+            )
+        if not core.bot.db_pool:
+            return await interaction.response.send_message(
+                "Responder withdrawal requires the rescue database to be online.",
+                ephemeral=True,
+            )
+
+        removed, was_primary = await core.bot.remove_responder(
+            interaction.channel.id,
+            interaction.user.id,
+        )
+        if not removed:
+            return await interaction.response.send_message(
+                "You are not currently listed as a responder on this incident.",
+                ephemeral=True,
+            )
+
+        incident_id = core.incident_id_from_channel(interaction.channel)
+        if was_primary and interaction.message and interaction.message.embeds:
+            embed = interaction.message.embeds[0].copy()
+            self.set_field(embed, "Primary Responder", "Unassigned")
+            self.set_field(embed, "Status", "🔴 Awaiting Responder")
+            priority = core.priority_from_embed(embed)
+            if priority == "critical":
+                embed.color = discord.Color.red()
+            elif priority == "urgent":
+                embed.color = discord.Color.orange()
+            else:
+                embed.color = discord.Color.green()
+            await interaction.response.edit_message(embed=embed, view=self)
+            await interaction.followup.send(
+                f"↩️ {interaction.user.mention} left the response and released primary responsibility for {incident_id}. The incident is awaiting a new primary responder."
+            )
+        else:
+            await interaction.response.send_message(
+                f"↩️ {interaction.user.mention} left the response for {incident_id}."
+            )
+
+        await core.bot.refresh_dispatch_board(interaction.guild)
 
 
 async def setup_database_with_dashboard(self):
@@ -432,6 +564,7 @@ async def dynamic_request_submit(self, interaction):
     await interaction.followup.send(f"{incident_id} created: {channel.mention}", ephemeral=True)
 
 
+core.IncidentControlsView = IncidentControlsViewWithLeave
 core.RescueBot.setup_database = setup_database_with_dashboard
 core.RescueBot.setup_hook = setup_hook_multi_guild
 core.RescueBot.close = close_with_dashboard
@@ -439,6 +572,7 @@ core.RescueBot.create_incident_record = create_incident_record_with_ledger
 core.RescueBot.update_incident = update_incident_with_ledger
 core.RescueBot.update_priority = update_priority_with_ledger
 core.RescueBot.add_responder = add_responder_with_ledger
+core.RescueBot.remove_responder = remove_responder_with_ledger
 core.RescueBot.refresh_dispatch_board = refresh_dispatch_board_with_dashboard
 core.responder_roles = configured_responder_roles
 core.all_responder_roles = configured_all_responder_roles
