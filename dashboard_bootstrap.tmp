@@ -1,2 +1,0 @@
-from dashboard_core import app
-import dashboard_performance  # registers performance route and nav link
