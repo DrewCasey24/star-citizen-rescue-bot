@@ -5,6 +5,27 @@ from fastapi import HTTPException
 import dashboard_core as base
 
 ALLOWED_ACTIONS = {"priority_up", "priority_down", "arrived", "backup", "close"}
+ACTION_ROUTE = "/guild/{guild_id}/incident/{incident_number}/action"
+
+
+def remove_legacy_action_route():
+    """Remove dashboard_core's legacy action endpoint before the authoritative route is registered.
+
+    dashboard_core still contains the historical implementation for now because it is a large
+    shared module. Keeping route ownership here prevents that dead implementation from ever
+    becoming an active FastAPI handler and gives the action layer one explicit owner.
+    """
+    removed = 0
+    for route in list(base.app.router.routes):
+        if getattr(route, "path", None) == ACTION_ROUTE and "POST" in getattr(route, "methods", set()):
+            base.app.router.routes.remove(route)
+            removed += 1
+    return removed
+
+
+# Route ownership belongs to this module. Remove any handler registered by dashboard_core
+# before dashboard_discord_consistency installs the production endpoint.
+remove_legacy_action_route()
 
 
 async def apply_incident_action(guild_id: int, incident_number: int, action: str, actor_id: int):
@@ -47,17 +68,11 @@ async def apply_incident_action(guild_id: int, incident_number: int, action: str
                 new_priority = base.PRIORITY_ORDER[new_index]
                 if new_priority == current:
                     boundary = "highest" if action == "priority_up" else "lowest"
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"Incident is already at the {boundary} priority.",
-                    )
+                    raise HTTPException(status_code=409, detail=f"Incident is already at the {boundary} priority.")
                 await conn.execute(
                     "UPDATE rescue_incidents SET priority=$3,priority_changed_by=$4,"
                     "priority_changed_at=NOW() WHERE guild_id=$1 AND incident_number=$2",
-                    guild_id,
-                    incident_number,
-                    new_priority,
-                    actor_id,
+                    guild_id, incident_number, new_priority, actor_id,
                 )
                 event_type = "priority_changed"
                 title = "Priority Changed"
@@ -67,29 +82,21 @@ async def apply_incident_action(guild_id: int, incident_number: int, action: str
                 )
             elif action == "arrived":
                 if incident["arrived_at"] is not None:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="This incident has already been marked on scene.",
-                    )
+                    raise HTTPException(status_code=409, detail="This incident has already been marked on scene.")
                 await conn.execute(
                     "UPDATE rescue_incidents SET status='on_scene',arrived_at=NOW() "
                     "WHERE guild_id=$1 AND incident_number=$2",
-                    guild_id,
-                    incident_number,
+                    guild_id, incident_number,
                 )
                 title = "Arrived On Scene"
                 details = "Incident marked on scene from the web dashboard."
             elif action == "backup":
                 if incident["backup_requested_at"] is not None:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="Backup has already been requested for this incident.",
-                    )
+                    raise HTTPException(status_code=409, detail="Backup has already been requested for this incident.")
                 await conn.execute(
                     "UPDATE rescue_incidents SET status='backup_requested',backup_requested_at=NOW() "
                     "WHERE guild_id=$1 AND incident_number=$2",
-                    guild_id,
-                    incident_number,
+                    guild_id, incident_number,
                 )
                 event_type = "backup_requested"
                 title = "Backup Requested"
@@ -98,9 +105,7 @@ async def apply_incident_action(guild_id: int, incident_number: int, action: str
                 await conn.execute(
                     "UPDATE rescue_incidents SET status='closed',closed_at=NOW(),closed_by_id=$3 "
                     "WHERE guild_id=$1 AND incident_number=$2",
-                    guild_id,
-                    incident_number,
-                    actor_id,
+                    guild_id, incident_number, actor_id,
                 )
                 event_type = "closed"
                 title = "Incident Closed"
@@ -111,13 +116,7 @@ async def apply_incident_action(guild_id: int, incident_number: int, action: str
                 "INSERT INTO rescue_incident_events("
                 "guild_id,incident_number,channel_id,event_type,actor_id,title,details,created_at"
                 ") VALUES($1,$2,$3,$4,$5,$6,$7,NOW())",
-                guild_id,
-                incident_number,
-                incident["channel_id"],
-                event_type,
-                actor_id,
-                title,
-                details,
+                guild_id, incident_number, incident["channel_id"], event_type, actor_id, title, details,
             )
 
     updated, _, _ = await base.load_incident(guild_id, incident_number)
