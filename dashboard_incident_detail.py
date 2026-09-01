@@ -26,13 +26,14 @@ INCIDENT_CSS = r'''
 .timeline-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;margin-bottom:8px}
 .timing-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}.timing-item{padding:10px;border-radius:10px;background:rgba(5,11,19,.35);border:1px solid rgba(116,153,196,.11)}.timing-item .metric{font-size:20px;margin-top:2px}
 .quick-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.sync-banner{display:flex;justify-content:space-between;gap:16px;align-items:center;flex-wrap:wrap;padding:14px 16px;border-radius:12px;margin-bottom:14px}.sync-banner strong{display:block;margin-bottom:3px}.sync-banner p{margin:0;font-size:12px;line-height:1.5}.sync-warning{background:rgba(166,91,24,.15);border:1px solid rgba(255,180,93,.28);color:#ffd09a}.sync-restored{background:rgba(35,122,87,.14);border:1px solid rgba(69,212,155,.24);color:#a8efc8}.sync-banner form{margin:0}.sync-banner .btn{white-space:nowrap}
 @media(max-width:1050px){.incident-layout{grid-template-columns:1fr}.incident-side{position:static;grid-template-columns:1fr 1fr}.command-card{grid-column:1/-1}}
 @media(max-width:760px){.incident-summary{grid-template-columns:1fr 1fr}.incident-side{grid-template-columns:1fr}.incident-title h1{font-size:23px}.timing-grid{grid-template-columns:1fr 1fr}}
 @media(max-width:480px){.incident-summary{grid-template-columns:1fr}.timing-grid{grid-template-columns:1fr}}
 '''
 
 
-async def incident_detail_streamlined(request: Request, guild_id: int, incident_number: int, action: str = ""):
+async def incident_detail_streamlined(request: Request, guild_id: int, incident_number: int, action: str = "", sync: str = ""):
     guild_info = base.require_guild_access(request, guild_id)
     await base.require_bot_installed(guild_id)
     incident, responders, ledger = await base.load_incident(guild_id, incident_number)
@@ -114,6 +115,12 @@ async def incident_detail_streamlined(request: Request, guild_id: int, incident_
     }
     action_notice = f'<div class="notice">{base.esc(action_messages[action])}</div>' if action in action_messages else ""
 
+    sync_notice = ""
+    if sync == "warning":
+        sync_notice = f'''<div class="sync-banner sync-warning"><div><strong>Action saved, but Discord synchronization was incomplete.</strong><p>The database is current. Retry the safe state sync to refresh the incident card, dispatch board, and closed-channel state without repeating the original incident action or paging responders again.</p></div><form method="post" action="/guild/{guild_id}/incident/{incident_number}/retry-sync"><input type="hidden" name="csrf" value="{csrf}"><button class="btn warn" type="submit">Retry Discord Sync</button></form></div>'''
+    elif sync == "restored":
+        sync_notice = '<div class="sync-banner sync-restored"><div><strong>Discord synchronization restored.</strong><p>The incident card, dispatch board, and applicable channel state were refreshed successfully.</p></div></div>'
+
     channel_button = (
         f'<a class="btn" href="https://discord.com/channels/{guild_id}/{incident["channel_id"]}" target="_blank" rel="noopener">Open Discord Channel</a>'
         if incident["channel_id"]
@@ -131,7 +138,7 @@ async def incident_detail_streamlined(request: Request, guild_id: int, incident_
 <form class="command-danger" method="post" action="/guild/{guild_id}/incident/{incident_number}/action"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="action" value="close"><button class="btn danger" type="submit" onclick="return confirm('Close {incident_id}? This will archive the incident and disable its Discord controls.')"{disabled}>🔒 Close Incident</button></form>
 </div><div class="control-note">Respond and Join Response remain Discord-only responder actions.</div></div>'''
 
-    body = f'''<style>{INCIDENT_CSS}</style>{action_notice}
+    body = f'''<style>{INCIDENT_CSS}</style>{sync_notice}{action_notice}
 <div class="incident-hero"><div><div class="incident-title"><h1>{incident_id}</h1><div class="incident-badges"><span class="pill {priority_class}">{base.esc(base.PRIORITIES.get(incident['priority'], incident['priority']))}</span><span class="status-badge">{base.esc(status_label)}</span></div></div><div class="incident-subtitle">{base.esc(service_label)} · Opened {base.format_dt(incident['created_at'])}</div></div><div class="quick-actions">{channel_button}<a class="btn secondary" href="/guild/{guild_id}/history">History</a></div></div>
 <div class="incident-layout"><main class="incident-main"><div class="card"><div class="incident-summary"><div class="summary-item"><div class="label">Callsign</div><strong>{base.esc(incident['callsign'])}</strong></div><div class="summary-item"><div class="label">Location</div><strong>{base.esc(incident['location'])}</strong></div><div class="summary-item"><div class="label">Primary Responder</div><strong>{who(incident['primary_responder_id'], 'Unassigned')}</strong></div><div class="summary-item"><div class="label">Support</div><strong>{support_text}</strong></div></div><div class="kv" style="margin-top:18px"><div>Requester</div><div>{who(incident['requester_id'], 'Requester')}</div><div>Service</div><div>{base.esc(service_label)}</div><div>Claimed</div><div>{base.format_dt(incident['responded_at'])}</div><div>Arrived</div><div>{base.format_dt(incident['arrived_at'])}</div><div>Closed</div><div>{base.format_dt(incident['closed_at'])}</div></div></div>
 <div class="card situation-card"><h2>Situation</h2><div class="situation">{base.esc(incident['situation'])}</div></div>
