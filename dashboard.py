@@ -13,6 +13,7 @@ import dashboard_settings_status  # adds configuration health and streamlined se
 import dashboard_incident_card_persistence  # remembers Discord incident card IDs for direct updates
 import dashboard_discord_consistency  # surfaces incomplete Discord synchronization after web actions
 import dashboard_health  # adds live database, Discord, configuration, board, and incident-card checks
+import dashboard_config_repair  # removes saved Discord role/channel references that no longer exist
 import dashboard_health_nav  # adds System Health to the shared sidebar
 import dashboard_error_pages  # replaces raw FastAPI/JSON failures with dashboard-styled recovery pages
 from dashboard_core import app
