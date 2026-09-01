@@ -70,70 +70,106 @@ async def responder_performance(request: Request, guild_id: int, date_from: str 
             """,
             *args,
         )
-        primary_rows = await conn.fetch(
-            f"""
-            SELECT ri.primary_responder_id AS user_id,
-                   COUNT(*) AS primary_calls,
-                   COUNT(*) FILTER (WHERE ri.status='closed') AS completed_primary,
-                   AVG(EXTRACT(EPOCH FROM (ri.responded_at-ri.created_at))) FILTER (WHERE ri.responded_at IS NOT NULL) AS avg_claim,
-                   AVG(EXTRACT(EPOCH FROM (ri.arrived_at-ri.created_at))) FILTER (WHERE ri.arrived_at IS NOT NULL) AS avg_scene
-            FROM rescue_incidents ri
-            WHERE {where_sql} AND ri.primary_responder_id IS NOT NULL
-            GROUP BY ri.primary_responder_id
-            """,
-            *args,
-        )
-        participation_rows = await conn.fetch(
+        performance_rows = await conn.fetch(
             f"""
             WITH filtered AS (
                 SELECT ri.* FROM rescue_incidents ri WHERE {where_sql}
-            ), participants AS (
-                SELECT primary_responder_id AS user_id, channel_id FROM filtered WHERE primary_responder_id IS NOT NULL
+            ), participation AS (
+                SELECT primary_responder_id AS user_id, incident_number
+                FROM filtered WHERE primary_responder_id IS NOT NULL
                 UNION
-                SELECT rr.user_id, rr.channel_id
+                SELECT rr.user_id, f.incident_number
                 FROM rescue_incident_responders rr
                 JOIN filtered f ON f.channel_id=rr.channel_id
                 UNION
-                SELECT e.actor_id AS user_id, f.channel_id
+                SELECT e.actor_id AS user_id, f.incident_number
                 FROM rescue_incident_events e
                 JOIN filtered f ON f.guild_id=e.guild_id AND f.incident_number=e.incident_number
                 WHERE e.actor_id IS NOT NULL AND e.event_type IN ('primary_assigned','responder_joined')
+            ), primary_participation AS (
+                SELECT primary_responder_id AS user_id, incident_number
+                FROM filtered WHERE primary_responder_id IS NOT NULL
+                UNION
+                SELECT e.actor_id AS user_id, f.incident_number
+                FROM rescue_incident_events e
+                JOIN filtered f ON f.guild_id=e.guild_id AND f.incident_number=e.incident_number
+                WHERE e.actor_id IS NOT NULL AND e.event_type='primary_assigned'
+            ), primary_claims AS (
+                SELECT e.actor_id AS user_id, f.incident_number,
+                       EXTRACT(EPOCH FROM (MIN(e.created_at)-f.created_at)) AS seconds
+                FROM rescue_incident_events e
+                JOIN filtered f ON f.guild_id=e.guild_id AND f.incident_number=e.incident_number
+                WHERE e.actor_id IS NOT NULL AND e.event_type='primary_assigned'
+                GROUP BY e.actor_id,f.incident_number,f.created_at
+                UNION ALL
+                SELECT f.primary_responder_id AS user_id, f.incident_number,
+                       EXTRACT(EPOCH FROM (f.responded_at-f.created_at)) AS seconds
+                FROM filtered f
+                WHERE f.primary_responder_id IS NOT NULL AND f.responded_at IS NOT NULL
+            ), claim_dedup AS (
+                SELECT user_id,incident_number,MIN(seconds) AS seconds
+                FROM primary_claims
+                WHERE seconds>=0
+                GROUP BY user_id,incident_number
+            ), participant_stats AS (
+                SELECT p.user_id,
+                       COUNT(*) AS total_calls,
+                       COUNT(*) FILTER (WHERE pp.incident_number IS NOT NULL) AS primary_calls,
+                       COUNT(*) FILTER (WHERE pp.incident_number IS NULL) AS support_calls
+                FROM participation p
+                LEFT JOIN primary_participation pp
+                  ON pp.user_id=p.user_id AND pp.incident_number=p.incident_number
+                GROUP BY p.user_id
+            ), withdrawal_stats AS (
+                SELECT e.actor_id AS user_id,COUNT(*) AS withdrawals
+                FROM rescue_incident_events e
+                JOIN filtered f ON f.guild_id=e.guild_id AND f.incident_number=e.incident_number
+                WHERE e.actor_id IS NOT NULL AND e.event_type='responder_left'
+                GROUP BY e.actor_id
+            ), claim_stats AS (
+                SELECT user_id,AVG(seconds) AS avg_claim
+                FROM claim_dedup
+                GROUP BY user_id
+            ), arrival_stats AS (
+                SELECT e.actor_id AS user_id,
+                       AVG(EXTRACT(EPOCH FROM (e.created_at-f.created_at))) AS avg_scene
+                FROM rescue_incident_events e
+                JOIN filtered f ON f.guild_id=e.guild_id AND f.incident_number=e.incident_number
+                WHERE e.actor_id IS NOT NULL AND e.event_type='arrived' AND e.created_at>=f.created_at
+                GROUP BY e.actor_id
+            ), users AS (
+                SELECT user_id FROM participant_stats
+                UNION SELECT user_id FROM withdrawal_stats
+                UNION SELECT user_id FROM claim_stats
+                UNION SELECT user_id FROM arrival_stats
             )
-            SELECT user_id, COUNT(DISTINCT channel_id) AS total_calls
-            FROM participants
-            GROUP BY user_id
-            """,
-            *args,
-        )
-        ledger_rows = await conn.fetch(
-            f"""
-            WITH filtered AS (
-                SELECT guild_id,incident_number FROM rescue_incidents ri WHERE {where_sql}
-            )
-            SELECT e.actor_id AS user_id,
-                   COUNT(*) FILTER (WHERE e.event_type='responder_left') AS withdrawals
-            FROM rescue_incident_events e
-            JOIN filtered f ON f.guild_id=e.guild_id AND f.incident_number=e.incident_number
-            WHERE e.actor_id IS NOT NULL
-            GROUP BY e.actor_id
+            SELECT u.user_id,
+                   COALESCE(ps.total_calls,0) AS total_calls,
+                   COALESCE(ps.primary_calls,0) AS primary_calls,
+                   COALESCE(ps.support_calls,0) AS support_calls,
+                   COALESCE(ws.withdrawals,0) AS withdrawals,
+                   cs.avg_claim,
+                   ars.avg_scene
+            FROM users u
+            LEFT JOIN participant_stats ps ON ps.user_id=u.user_id
+            LEFT JOIN withdrawal_stats ws ON ws.user_id=u.user_id
+            LEFT JOIN claim_stats cs ON cs.user_id=u.user_id
+            LEFT JOIN arrival_stats ars ON ars.user_id=u.user_id
             """,
             *args,
         )
 
-    stats = {}
-    for row in participation_rows:
-        stats[int(row["user_id"])] = {"total_calls": int(row["total_calls"] or 0)}
-    for row in primary_rows:
-        item = stats.setdefault(int(row["user_id"]), {"total_calls": 0})
-        item.update(
-            primary_calls=int(row["primary_calls"] or 0),
-            completed_primary=int(row["completed_primary"] or 0),
-            avg_claim=row["avg_claim"],
-            avg_scene=row["avg_scene"],
-        )
-    for row in ledger_rows:
-        item = stats.setdefault(int(row["user_id"]), {"total_calls": 0})
-        item["withdrawals"] = int(row["withdrawals"] or 0)
+    stats = {
+        int(row["user_id"]): {
+            "total_calls": int(row["total_calls"] or 0),
+            "primary_calls": int(row["primary_calls"] or 0),
+            "support_calls": int(row["support_calls"] or 0),
+            "withdrawals": int(row["withdrawals"] or 0),
+            "avg_claim": row["avg_claim"],
+            "avg_scene": row["avg_scene"],
+        }
+        for row in performance_rows
+    }
 
     names = await base.member_names(guild_id, list(stats))
     ranked = sorted(
@@ -145,14 +181,14 @@ async def responder_performance(request: Request, guild_id: int, date_from: str 
         ),
     )
     rows_html = "".join(
-        f'''<tr><td><a class="incident-link" href="/guild/{guild_id}/responder/{uid}">{esc(names.get(uid, "Discord User"))}</a></td><td>{s.get("total_calls",0)}</td><td>{s.get("primary_calls",0)}</td><td>{max(0,s.get("total_calls",0)-s.get("primary_calls",0))}</td><td>{s.get("withdrawals",0)}</td><td>{base.duration(s.get("avg_claim"))}</td><td>{base.duration(s.get("avg_scene"))}</td></tr>'''
+        f'''<tr><td><a class="incident-link" href="/guild/{guild_id}/responder/{uid}">{esc(names.get(uid, "Discord User"))}</a></td><td>{s.get("total_calls",0)}</td><td>{s.get("primary_calls",0)}</td><td>{s.get("support_calls",0)}</td><td>{s.get("withdrawals",0)}</td><td>{base.duration(s.get("avg_claim"))}</td><td>{base.duration(s.get("avg_scene"))}</td></tr>'''
         for uid, s in ranked
     ) or '<tr><td colspan="7" class="muted">No responder activity in this period.</td></tr>'
 
     body = f'''<div class="section-nav"><a href="/guild/{guild_id}">← Back to Dashboard</a><a href="/guild/{guild_id}/history">Search History</a></div>
 <div class="card"><div style="display:flex;justify-content:space-between;gap:24px;align-items:flex-start;flex-wrap:wrap"><div style="flex:1 1 420px"><h2>Responder Performance</h2><p class="muted">Participation includes both primary and support response activity. Select a responder to open their detailed profile.</p></div><form method="get" action="/guild/{guild_id}/performance" style="display:grid;grid-template-columns:minmax(170px,1fr) minmax(170px,1fr);column-gap:28px;row-gap:12px;align-items:end;min-width:min(100%,390px);max-width:460px;width:100%"><div><label>From</label><input style="width:100%" type="date" name="date_from" value="{esc(date_from)}"></div><div><label>To</label><input style="width:100%" type="date" name="date_to" value="{esc(date_to)}"></div><div style="grid-column:1/-1;display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap"><button class="btn" type="submit">Apply</button><a class="btn secondary" href="/guild/{guild_id}/performance">Clear</a></div></form></div></div>
 <div class="grid" style="margin-top:16px"><div class="card span3"><div class="label">Incidents</div><div class="metric">{int(summary['incidents'] or 0)}</div></div><div class="card span3"><div class="label">Completed</div><div class="metric">{int(summary['completed'] or 0)}</div></div><div class="card span3"><div class="label">Avg Claim</div><div class="metric">{base.duration(summary['avg_claim'])}</div></div><div class="card span3"><div class="label">Avg On Scene</div><div class="metric">{base.duration(summary['avg_scene'])}</div></div>
-<div class="card span12"><h2>Responder Activity</h2><p class="muted">Total Responses counts distinct incidents in which the member served as primary or support. Withdrawals are preserved from the permanent event ledger.</p><div style="overflow:auto"><table><thead><tr><th>Responder</th><th>Total Responses</th><th>Primary</th><th>Support</th><th>Withdrawals</th><th>Avg Claim</th><th>Avg On Scene</th></tr></thead><tbody>{rows_html}</tbody></table></div></div></div>'''
+<div class="card span12"><h2>Responder Activity</h2><p class="muted">Total Responses, Primary, Support, Withdrawals, and responder timing use the permanent event ledger with current incident state retained as a compatibility fallback for older incidents.</p><div style="overflow:auto"><table><thead><tr><th>Responder</th><th>Total Responses</th><th>Primary</th><th>Support</th><th>Withdrawals</th><th>Avg Claim</th><th>Avg On Scene</th></tr></thead><tbody>{rows_html}</tbody></table></div></div></div>'''
     return base.page(f"Responder Performance · {guild_info['name']}", body, base.current_user(request))
 
 
@@ -307,18 +343,17 @@ async def responder_profile(request: Request, guild_id: int, user_id: int):
     recent_html = "".join(
         f'<tr><td><a class="incident-link" href="/guild/{guild_id}/incident/{row["incident_number"]}">RESCUE-{row["incident_number"]:04d}</a></td><td>{"Primary" if row["was_primary"] else "Support"}</td><td>{esc(base.SERVICES.get(row["service"], row["service"]))}</td><td>{esc(base.PRIORITIES.get(row["priority"], row["priority"]))}</td><td>{esc(base.STATUSES.get(row["status"], row["status"]))}</td><td>{esc(row["callsign"])}</td><td>{base.format_dt(row["created_at"])}</td></tr>'
         for row in recent
-    ) or '<tr><td colspan="7" class="muted">No incident participation recorded.</td></tr>'
+    ) or '<tr><td colspan="7" class="muted">No incidents recorded.</td></tr>'
 
     event_html = "".join(
-        f'<div class="event"><div class="event-title">{esc(row["title"])}</div><div>{esc(row["details"])}</div><div class="event-meta">{base.format_dt(row["created_at"])} · <a href="/guild/{guild_id}/incident/{row["incident_number"]}">RESCUE-{row["incident_number"]:04d}</a></div></div>'
+        f'<div class="timeline-item"><div><strong>{esc(row["title"])}</strong> · <a class="incident-link" href="/guild/{guild_id}/incident/{row["incident_number"]}">RESCUE-{row["incident_number"]:04d}</a></div><div>{esc(row["details"])}</div><div class="muted">{base.format_dt(row["created_at"])}</div></div>'
         for row in events
-    ) or '<div class="muted">No ledger events recorded for this responder yet.</div>'
+    ) or '<p class="muted">No ledger activity recorded.</p>'
 
-    body = f'''<div class="section-nav"><a href="/guild/{guild_id}/performance">← Back to Responder Performance</a><a href="/guild/{guild_id}">Dashboard</a><a href="/guild/{guild_id}/history?responder={user_id}">Search This Responder</a></div>
-<div class="card"><div class="label">Responder Profile</div><h1 style="margin:6px 0 8px">{esc(name)}</h1><p class="muted">Performance history is built from current incident records plus the permanent responder event ledger, so withdrawn participation remains visible.</p></div>
-<div class="grid" style="margin-top:16px"><div class="card span3"><div class="label">Total Responses</div><div class="metric">{total_calls}</div></div><div class="card span3"><div class="label">Primary</div><div class="metric">{int(metrics['primary_calls'] or 0)}</div></div><div class="card span3"><div class="label">Support Only</div><div class="metric">{int(metrics['support_only_calls'] or 0)}</div></div><div class="card span3"><div class="label">Withdrawals</div><div class="metric">{int(metrics['withdrawals'] or 0)}</div></div>
-<div class="card span4"><h2>Response Metrics</h2><div class="kv"><div>Avg primary claim</div><div>{base.duration(timing['avg_claim'])}</div><div>Arrivals reported</div><div>{int(metrics['arrivals_reported'] or 0)}</div><div>Backup requests</div><div>{int(metrics['backup_requests'] or 0)}</div></div><p class="control-note">Arrival and backup counts only attribute ledger events where this responder is recorded as the actor.</p></div>
-<div class="card span8"><h2>Service Breakdown</h2><div style="overflow:auto"><table><thead><tr><th>Service</th><th>Responses</th></tr></thead><tbody>{service_html}</tbody></table></div></div>
-<div class="card span12"><h2>Recent Incidents</h2><div style="overflow:auto"><table><thead><tr><th>Incident</th><th>Role</th><th>Service</th><th>Priority</th><th>Status</th><th>Callsign</th><th>Opened</th></tr></thead><tbody>{recent_html}</tbody></table></div></div>
-<div class="card span12"><h2>Recent Responder Activity</h2><p class="muted">Most recent permanent ledger events attributed to this responder.</p><div class="timeline">{event_html}</div></div></div>'''
-    return base.page(f"{name} · Responder Profile · {guild_info['name']}", body, base.current_user(request))
+    body = f'''<div class="section-nav"><a href="/guild/{guild_id}/performance">← Responder Performance</a><a href="/guild/{guild_id}">Dashboard</a><a href="/guild/{guild_id}/history">Search History</a></div>
+<div class="card"><h2>{esc(name)}</h2><p class="muted">Responder performance profile based on permanent incident participation and event history.</p></div>
+<div class="grid" style="margin-top:16px"><div class="card span2"><div class="label">Total Responses</div><div class="metric">{total_calls}</div></div><div class="card span2"><div class="label">Primary</div><div class="metric">{int(metrics['primary_calls'] or 0)}</div></div><div class="card span2"><div class="label">Support</div><div class="metric">{int(metrics['support_only_calls'] or 0)}</div></div><div class="card span2"><div class="label">Withdrawals</div><div class="metric">{int(metrics['withdrawals'] or 0)}</div></div><div class="card span2"><div class="label">Avg Primary Claim</div><div class="metric">{base.duration(timing['avg_claim'])}</div></div><div class="card span2"><div class="label">Arrivals</div><div class="metric">{int(metrics['arrivals_reported'] or 0)}</div></div>
+<div class="card span4"><h2>Service Breakdown</h2><div style="overflow:auto"><table><thead><tr><th>Service</th><th>Responses</th></tr></thead><tbody>{service_html}</tbody></table></div></div>
+<div class="card span8"><h2>Recent Incidents</h2><div style="overflow:auto"><table><thead><tr><th>Incident</th><th>Role</th><th>Service</th><th>Priority</th><th>Status</th><th>Callsign</th><th>Created</th></tr></thead><tbody>{recent_html}</tbody></table></div></div>
+<div class="card span12"><h2>Recent Activity</h2><p class="muted">Backup Requests: {int(metrics['backup_requests'] or 0)}</p><div class="timeline">{event_html}</div></div></div>'''
+    return base.page(f"{name} · Responder Performance", body, base.current_user(request))
