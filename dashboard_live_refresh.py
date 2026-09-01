@@ -6,16 +6,16 @@ import dashboard_core as base
 
 
 LIVE_CSS = r'''
-.live-sync{display:inline-flex;align-items:center;gap:7px;min-height:34px;padding:7px 10px;border:1px solid rgba(69,212,155,.18);border-radius:10px;background:rgba(20,104,76,.10);color:#8fe3c1;font-size:11px;font-weight:700;white-space:nowrap}
-.live-sync::before{content:"";width:7px;height:7px;border-radius:50%;background:#45d49b;box-shadow:0 0 0 3px rgba(69,212,155,.10)}
-.live-sync.syncing{color:#9fc8f4;border-color:rgba(86,168,255,.18);background:rgba(45,103,163,.10)}
-.live-sync.syncing::before{background:#56a8ff;animation:live-pulse 1s ease-in-out infinite}
-.live-sync.error{color:#ffc27a;border-color:rgba(255,180,93,.22);background:rgba(166,91,24,.12)}
-.live-sync.error::before{background:#ffb45d}
+.live-sync{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:8px 12px;border:1px solid rgba(69,212,155,.32);border-radius:10px;background:rgba(20,104,76,.18);color:#a8f0d2;font-size:12px;font-weight:800;letter-spacing:.02em;white-space:nowrap;box-shadow:0 0 0 1px rgba(69,212,155,.04),0 0 18px rgba(69,212,155,.07)}
+.live-sync::before{content:"";width:8px;height:8px;border-radius:50%;background:#45d49b;box-shadow:0 0 0 4px rgba(69,212,155,.12),0 0 10px rgba(69,212,155,.45)}
+.live-sync.syncing{color:#b9dcff;border-color:rgba(86,168,255,.30);background:rgba(45,103,163,.16)}
+.live-sync.syncing::before{background:#56a8ff;animation:live-pulse 1s ease-in-out infinite;box-shadow:0 0 0 4px rgba(86,168,255,.12),0 0 10px rgba(86,168,255,.45)}
+.live-sync.error{color:#ffd39a;border-color:rgba(255,180,93,.32);background:rgba(166,91,24,.18)}
+.live-sync.error::before{background:#ffb45d;box-shadow:0 0 0 4px rgba(255,180,93,.12)}
 .live-flash{animation:live-flash .55s ease}
 @keyframes live-pulse{0%,100%{opacity:.45}50%{opacity:1}}
 @keyframes live-flash{0%{background-color:rgba(86,168,255,.10)}100%{background-color:transparent}}
-@media(max-width:760px){.live-sync{order:-1;width:100%;justify-content:center}}
+@media(max-width:760px){.live-sync{width:100%;justify-content:center}}
 '''
 
 
@@ -57,16 +57,24 @@ def _mark_live_regions(markup: str) -> str:
     return markup
 
 
+def _add_live_indicator(markup: str) -> str:
+    indicator = '<span class="live-sync" id="live-sync" title="Overview automatically updates every 30 seconds">LIVE · Auto-refresh 30s</span>'
+    marker = '<div class="overview-actions">'
+    if marker in markup:
+        return markup.replace(marker, marker + indicator, 1)
+    # Fallback for future overview markup changes: put it directly before the grid.
+    grid_marker = '<div class="grid">'
+    if grid_marker in markup:
+        return markup.replace(grid_marker, f'<div style="display:flex;justify-content:flex-end;margin-bottom:12px">{indicator}</div>{grid_marker}', 1)
+    return markup
+
+
 async def live_overview(request, guild_id: int, saved: int = 0):
     response = await _previous_overview(request, guild_id, saved)
     markup = response.body.decode("utf-8")
     markup = _mark_live_regions(markup)
     markup = markup.replace("</style>", LIVE_CSS + "\n</style>", 1)
-    markup = markup.replace(
-        '<div class="overview-actions">',
-        '<div class="overview-actions"><span class="live-sync" id="live-sync" title="Overview updates automatically every 30 seconds">Live · updated just now</span>',
-        1,
-    )
+    markup = _add_live_indicator(markup)
 
     script = f'''<script>
 (() => {{
@@ -85,7 +93,7 @@ async def live_overview(request, guild_id: int, saved: int = 0):
   async function refreshOverview() {{
     if (running || document.hidden) return;
     running = true;
-    setStatus("syncing", "Live · refreshing");
+    setStatus("syncing", "LIVE · Refreshing…");
     try {{
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 10000);
@@ -113,9 +121,9 @@ async def live_overview(request, guild_id: int, saved: int = 0):
       }}
       if (!replaced) throw new Error("Live regions unavailable");
       const now = new Date();
-      setStatus("", `Live · updated ${{now.toLocaleTimeString([], {{hour: "numeric", minute: "2-digit"}})}}`);
+      setStatus("", `LIVE · Updated ${{now.toLocaleTimeString([], {{hour: "numeric", minute: "2-digit"}})}}`);
     }} catch (error) {{
-      setStatus("error", "Live · refresh delayed");
+      setStatus("error", "LIVE · Refresh delayed");
       console.warn("Dashboard live refresh failed", error);
     }} finally {{
       running = false;
