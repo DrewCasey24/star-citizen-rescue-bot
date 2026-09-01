@@ -1,5 +1,6 @@
 """Live-refresh the operations overview without reloading the full dashboard."""
 
+from fastapi import Request
 from fastapi.responses import HTMLResponse
 
 import dashboard_core as base
@@ -62,14 +63,13 @@ def _add_live_indicator(markup: str) -> str:
     marker = '<div class="overview-actions">'
     if marker in markup:
         return markup.replace(marker, marker + indicator, 1)
-    # Fallback for future overview markup changes: put it directly before the grid.
     grid_marker = '<div class="grid">'
     if grid_marker in markup:
         return markup.replace(grid_marker, f'<div style="display:flex;justify-content:flex-end;margin-bottom:12px">{indicator}</div>{grid_marker}', 1)
     return markup
 
 
-async def live_overview(request, guild_id: int, saved: int = 0):
+async def live_overview(request: Request, guild_id: int, saved: int = 0):
     response = await _previous_overview(request, guild_id, saved)
     markup = response.body.decode("utf-8")
     markup = _mark_live_regions(markup)
