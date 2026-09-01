@@ -1,7 +1,7 @@
 import html
 import os
 import secrets
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import asyncpg
@@ -173,7 +173,7 @@ def page(title, body, user=None):
     return HTMLResponse(
         f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)} · SC Rescue</title><style>
 :root{{--bg:#090d14;--panel:#111827;--line:#263247;--text:#e7edf7;--muted:#91a0b8}}
-*{{box-sizing:border-box}}body{{margin:0;background:linear-gradient(145deg,#080b11,#0d1420 55%,#0b1019);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;min-height:100vh}}a{{color:#8bc0ff;text-decoration:none}}.wrap{{max-width:1240px;margin:0 auto;padding:28px 20px 60px}}header{{display:flex;justify-content:space-between;gap:20px;align-items:center;margin-bottom:26px}}h1{{font-size:24px;margin:0}}h2{{font-size:17px;margin:0 0 14px}}.brand small,.muted,.user{{color:var(--muted)}}.user{{font-size:14px}}.grid{{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}}.card{{background:rgba(17,24,39,.92);border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:0 14px 35px rgba(0,0,0,.18)}}.span3{{grid-column:span 3}}.span4{{grid-column:span 4}}.span6{{grid-column:span 6}}.span8{{grid-column:span 8}}.span12{{grid-column:span 12}}.metric{{font-size:30px;font-weight:750;margin-top:4px}}.label{{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}}table{{width:100%;border-collapse:collapse;font-size:14px}}th,td{{text-align:left;padding:11px 10px;border-bottom:1px solid var(--line);vertical-align:top}}th{{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}}.pill,.status{{display:inline-block;padding:4px 8px;border-radius:999px;font-size:12px}}.p1{{background:#52242c;color:#ffb4bd}}.p2,.not-installed{{background:#50351d;color:#ffd49a}}.p3,.installed{{background:#153c32;color:#8df0c5}}label{{display:block;color:var(--muted);font-size:12px;margin:12px 0 6px}}select{{width:100%;background:#0c1320;color:var(--text);border:1px solid var(--line);border-radius:9px;padding:10px;min-height:42px}}select[multiple]{{min-height:120px}}.btn{{display:inline-block;border:0;border-radius:9px;background:#2b74c8;color:white;padding:11px 16px;font-weight:650;cursor:pointer}}.btn.secondary{{background:#263247}}.btn.install,.btn.success{{background:#237a57}}.btn.warn{{background:#a65b18}}.btn.danger{{background:#a93643}}.btn:disabled{{opacity:.45;cursor:not-allowed}}.notice{{padding:12px 14px;border:1px solid #315f45;background:#122d22;border-radius:10px;color:#a8efc8;margin-bottom:16px}}.guild{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 0;border-bottom:1px solid var(--line)}}.guild:last-child{{border:0}}.guild-actions{{display:flex;gap:10px;align-items:center;flex-wrap:wrap}}.section-nav{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}}.section-nav a{{padding:8px 10px;background:#111827;border:1px solid var(--line);border-radius:8px}}.kv{{display:grid;grid-template-columns:150px 1fr;gap:9px 16px;font-size:14px}}.kv div:nth-child(odd){{color:var(--muted)}}.timeline{{border-left:2px solid var(--line);padding-left:22px;margin:6px 0 0 8px}}.event{{position:relative;padding:0 0 18px 4px}}.event:before{{content:'';position:absolute;width:10px;height:10px;border-radius:50%;background:#5da8ff;left:-28px;top:5px;box-shadow:0 0 0 4px #111827}}.event-title{{font-weight:700}}.event-meta{{font-size:12px;color:var(--muted);margin-top:3px}}.situation{{white-space:pre-wrap;line-height:1.55}}.incident-link{{font-weight:700}}.ledger-badge{{font-size:11px;padding:3px 7px;border-radius:999px;background:#1b3150;color:#9fcaff;margin-left:7px}}.control-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.control-grid form{{margin:0}}.control-grid .btn{{width:100%}}.control-note{{margin-top:12px;font-size:12px;color:var(--muted);line-height:1.5}}@media(max-width:850px){{.span3,.span4,.span6,.span8{{grid-column:span 12}}header,.guild{{align-items:flex-start;flex-direction:column}}.kv{{grid-template-columns:1fr}}.control-grid{{grid-template-columns:1fr}}}}
+*{{box-sizing:border-box}}body{{margin:0;background:linear-gradient(145deg,#080b11,#0d1420 55%,#0b1019);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;min-height:100vh}}a{{color:#8bc0ff;text-decoration:none}}.wrap{{max-width:1240px;margin:0 auto;padding:28px 20px 60px}}header{{display:flex;justify-content:space-between;gap:20px;align-items:center;margin-bottom:26px}}h1{{font-size:24px;margin:0}}h2{{font-size:17px;margin:0 0 14px}}.brand small,.muted,.user{{color:var(--muted)}}.user{{font-size:14px}}.grid{{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}}.card{{background:rgba(17,24,39,.92);border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:0 14px 35px rgba(0,0,0,.18)}}.span3{{grid-column:span 3}}.span4{{grid-column:span 4}}.span6{{grid-column:span 6}}.span8{{grid-column:span 8}}.span12{{grid-column:span 12}}.metric{{font-size:30px;font-weight:750;margin-top:4px}}.label{{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}}table{{width:100%;border-collapse:collapse;font-size:14px}}th,td{{text-align:left;padding:11px 10px;border-bottom:1px solid var(--line);vertical-align:top}}th{{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}}.pill,.status{{display:inline-block;padding:4px 8px;border-radius:999px;font-size:12px}}.p1{{background:#52242c;color:#ffb4bd}}.p2,.not-installed{{background:#50351d;color:#ffd49a}}.p3,.installed{{background:#153c32;color:#8df0c5}}label{{display:block;color:var(--muted);font-size:12px;margin:12px 0 6px}}select,input{{width:100%;background:#0c1320;color:var(--text);border:1px solid var(--line);border-radius:9px;padding:10px;min-height:42px}}select[multiple]{{min-height:120px}}.btn{{display:inline-block;border:0;border-radius:9px;background:#2b74c8;color:white;padding:11px 16px;font-weight:650;cursor:pointer}}.btn.secondary{{background:#263247}}.btn.install,.btn.success{{background:#237a57}}.btn.warn{{background:#a65b18}}.btn.danger{{background:#a93643}}.btn:disabled{{opacity:.45;cursor:not-allowed}}.notice{{padding:12px 14px;border:1px solid #315f45;background:#122d22;border-radius:10px;color:#a8efc8;margin-bottom:16px}}.guild{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 0;border-bottom:1px solid var(--line)}}.guild:last-child{{border:0}}.guild-actions{{display:flex;gap:10px;align-items:center;flex-wrap:wrap}}.section-nav{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}}.section-nav a{{padding:8px 10px;background:#111827;border:1px solid var(--line);border-radius:8px}}.kv{{display:grid;grid-template-columns:150px 1fr;gap:9px 16px;font-size:14px}}.kv div:nth-child(odd){{color:var(--muted)}}.timeline{{border-left:2px solid var(--line);padding-left:22px;margin:6px 0 0 8px}}.event{{position:relative;padding:0 0 18px 4px}}.event:before{{content:'';position:absolute;width:10px;height:10px;border-radius:50%;background:#5da8ff;left:-28px;top:5px;box-shadow:0 0 0 4px #111827}}.event-title{{font-weight:700}}.event-meta{{font-size:12px;color:var(--muted);margin-top:3px}}.situation{{white-space:pre-wrap;line-height:1.55}}.incident-link{{font-weight:700}}.ledger-badge{{font-size:11px;padding:3px 7px;border-radius:999px;background:#1b3150;color:#9fcaff;margin-left:7px}}.control-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.control-grid form{{margin:0}}.control-grid .btn{{width:100%}}.control-note{{margin-top:12px;font-size:12px;color:var(--muted);line-height:1.5}}.filter-grid{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}}.filter-actions{{display:flex;gap:10px;align-items:end;flex-wrap:wrap}}.pagination{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:16px;flex-wrap:wrap}}.pagination .pages{{display:flex;gap:8px;align-items:center}}@media(max-width:850px){{.span3,.span4,.span6,.span8{{grid-column:span 12}}header,.guild{{align-items:flex-start;flex-direction:column}}.kv{{grid-template-columns:1fr}}.control-grid,.filter-grid{{grid-template-columns:1fr}}}}
 </style></head><body><div class="wrap"><header><div class="brand"><h1>🚨 Star Citizen Rescue Dispatch</h1><small>Operations Dashboard</small></div>{user_html}</header>{body}</div></body></html>'''
     )
 
@@ -452,8 +452,122 @@ async def guild_dashboard(request: Request, guild_id: int, saved: int = 0):
     ) or '<tr><td colspan="6" class="muted">No completed incidents.</td></tr>'
     notice = '<div class="notice">Configuration saved. The Discord bot refreshes responder/category settings within about 10 seconds.</div>' if saved else ""
     csrf = esc(request.session.get("csrf"))
-    body = f'''{notice}<div class="section-nav"><a href="#overview">Overview</a><a href="#active">Active Incidents</a><a href="#history">History</a><a href="#config">Configuration</a></div><div class="grid" id="overview"><div class="card span3"><div class="label">Total Incidents</div><div class="metric">{stats['total']}</div></div><div class="card span3"><div class="label">Active</div><div class="metric">{stats['active']}</div></div><div class="card span3"><div class="label">Completed</div><div class="metric">{stats['closed']}</div></div><div class="card span3"><div class="label">Avg Claim Time</div><div class="metric">{duration(stats['avg_response'])}</div></div><div class="card span12" id="active"><h2>Active Incidents</h2><p class="muted">Click an incident number to open its detailed command view.</p><div style="overflow:auto"><table><thead><tr><th>Incident</th><th>Priority</th><th>Status</th><th>Service</th><th>Callsign</th><th>Location</th><th>Primary</th></tr></thead><tbody>{active_rows}</tbody></table></div></div><div class="card span12" id="history"><h2>Recent Rescue History</h2><div style="overflow:auto"><table><thead><tr><th>Incident</th><th>Service</th><th>Priority</th><th>Callsign</th><th>Claim Time</th><th>Closed</th></tr></thead><tbody>{history_rows}</tbody></table></div></div><div class="card span12" id="config"><h2>Discord Configuration</h2><p class="muted">Only users with Manage Server permission can access this page. Role and incident-category changes are database-backed and picked up by the bot automatically.</p><form method="post" action="/guild/{guild_id}/config"><input type="hidden" name="csrf" value="{csrf}"><div class="grid"><div class="span6"><label>Responder roles (may use controls on any incident)</label><select multiple name="responder_roles">{role_options}</select><p class="muted">Select one or more roles.</p>{service_html}</div><div class="span6"><label>Request Assistance channel</label>{channel_select('request_channel', request_channel_id)}<label>Live Dispatch Board channel</label>{channel_select('dispatch_channel', dispatch_channel)}<label>Completed Rescue Log channel</label>{channel_select('log_channel', log_channel)}<label>Active Incident category</label><select name="incident_category">{category_options}</select><p class="muted">Moving the Request or Dispatch channel posts a fresh panel/board in the newly selected channel. Old messages are left in place so nothing is deleted unexpectedly.</p></div></div><div style="margin-top:18px"><button class="btn" type="submit">Save Configuration</button> <a class="btn secondary" href="/">Back to Servers</a></div></form></div></div>'''
+    body = f'''{notice}<div class="section-nav"><a href="#overview">Overview</a><a href="#active">Active Incidents</a><a href="/guild/{guild_id}/history">Search History</a><a href="#config">Configuration</a></div><div class="grid" id="overview"><div class="card span3"><div class="label">Total Incidents</div><div class="metric">{stats['total']}</div></div><div class="card span3"><div class="label">Active</div><div class="metric">{stats['active']}</div></div><div class="card span3"><div class="label">Completed</div><div class="metric">{stats['closed']}</div></div><div class="card span3"><div class="label">Avg Claim Time</div><div class="metric">{duration(stats['avg_response'])}</div></div><div class="card span12" id="active"><h2>Active Incidents</h2><p class="muted">Click an incident number to open its detailed command view.</p><div style="overflow:auto"><table><thead><tr><th>Incident</th><th>Priority</th><th>Status</th><th>Service</th><th>Callsign</th><th>Location</th><th>Primary</th></tr></thead><tbody>{active_rows}</tbody></table></div></div><div class="card span12" id="history"><div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap"><h2 style="margin:0">Recent Rescue History</h2><a class="btn secondary" href="/guild/{guild_id}/history">Search Full History</a></div><div style="overflow:auto;margin-top:12px"><table><thead><tr><th>Incident</th><th>Service</th><th>Priority</th><th>Callsign</th><th>Claim Time</th><th>Closed</th></tr></thead><tbody>{history_rows}</tbody></table></div></div><div class="card span12" id="config"><h2>Discord Configuration</h2><p class="muted">Only users with Manage Server permission can access this page. Role and incident-category changes are database-backed and picked up by the bot automatically.</p><form method="post" action="/guild/{guild_id}/config"><input type="hidden" name="csrf" value="{csrf}"><div class="grid"><div class="span6"><label>Responder roles (may use controls on any incident)</label><select multiple name="responder_roles">{role_options}</select><p class="muted">Select one or more roles.</p>{service_html}</div><div class="span6"><label>Request Assistance channel</label>{channel_select('request_channel', request_channel_id)}<label>Live Dispatch Board channel</label>{channel_select('dispatch_channel', dispatch_channel)}<label>Completed Rescue Log channel</label>{channel_select('log_channel', log_channel)}<label>Active Incident category</label><select name="incident_category">{category_options}</select><p class="muted">Moving the Request or Dispatch channel posts a fresh panel/board in the newly selected channel. Old messages are left in place so nothing is deleted unexpectedly.</p></div></div><div style="margin-top:18px"><button class="btn" type="submit">Save Configuration</button> <a class="btn secondary" href="/">Back to Servers</a></div></form></div></div>'''
     return page(guild_info["name"], body, current_user(request))
+
+
+@app.get("/guild/{guild_id}/history", response_class=HTMLResponse)
+async def rescue_history_page(
+    request: Request,
+    guild_id: int,
+    q: str = "",
+    service: str = "",
+    priority: str = "",
+    status: str = "",
+    responder: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    page_num: int = 1,
+):
+    guild_info = require_guild_access(request, guild_id)
+    await require_bot_installed(guild_id)
+    q = q.strip()[:120]
+    service = service if service in SERVICES else ""
+    priority = priority if priority in PRIORITIES else ""
+    status = status if status in STATUSES else ""
+    page_num = max(1, page_num)
+    responder_id = int(responder) if responder.isdigit() else None
+    from_dt = None
+    to_dt = None
+    try:
+        if date_from:
+            from_dt = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
+        if date_to:
+            to_dt = datetime.fromisoformat(date_to).replace(tzinfo=timezone.utc) + timedelta(days=1)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid history date filter.")
+
+    conditions = ["ri.guild_id=$1"]
+    args = [guild_id]
+
+    def add_arg(value):
+        args.append(value)
+        return f"${len(args)}"
+
+    if q:
+        p = add_arg(f"%{q}%")
+        conditions.append(f"(ri.incident_number::text ILIKE {p} OR ri.callsign ILIKE {p} OR ri.location ILIKE {p} OR ri.situation ILIKE {p})")
+    if service:
+        p = add_arg(service)
+        conditions.append(f"ri.service={p}")
+    if priority:
+        p = add_arg(priority)
+        conditions.append(f"ri.priority={p}")
+    if status:
+        p = add_arg(status)
+        conditions.append(f"ri.status={p}")
+    if responder_id:
+        p = add_arg(responder_id)
+        conditions.append(f"(ri.primary_responder_id={p} OR EXISTS (SELECT 1 FROM rescue_incident_responders rr WHERE rr.channel_id=ri.channel_id AND rr.user_id={p}))")
+    if from_dt:
+        p = add_arg(from_dt)
+        conditions.append(f"ri.created_at>={p}")
+    if to_dt:
+        p = add_arg(to_dt)
+        conditions.append(f"ri.created_at<{p}")
+
+    where_sql = " AND ".join(conditions)
+    page_size = 25
+    async with pool.acquire() as conn:
+        total = await conn.fetchval(f"SELECT COUNT(*) FROM rescue_incidents ri WHERE {where_sql}", *args)
+        limit_p = f"${len(args)+1}"
+        offset_p = f"${len(args)+2}"
+        rows = await conn.fetch(
+            f"SELECT ri.incident_number,ri.callsign,ri.service,ri.location,ri.priority,ri.status,ri.primary_responder_id,ri.created_at,ri.responded_at,ri.closed_at FROM rescue_incidents ri WHERE {where_sql} ORDER BY ri.created_at DESC,ri.incident_number DESC LIMIT {limit_p} OFFSET {offset_p}",
+            *args,
+            page_size,
+            (page_num - 1) * page_size,
+        )
+        responder_rows = await conn.fetch(
+            """
+            SELECT DISTINCT user_id FROM (
+                SELECT primary_responder_id AS user_id FROM rescue_incidents WHERE guild_id=$1 AND primary_responder_id IS NOT NULL
+                UNION
+                SELECT rr.user_id FROM rescue_incident_responders rr JOIN rescue_incidents ri ON ri.channel_id=rr.channel_id WHERE ri.guild_id=$1
+            ) responders
+            WHERE user_id IS NOT NULL
+            ORDER BY user_id
+            """,
+            guild_id,
+        )
+
+    responder_ids = [r["user_id"] for r in responder_rows]
+    names = await member_names(guild_id, responder_ids + [r["primary_responder_id"] for r in rows])
+    responder_options = '<option value="">Any responder</option>' + "".join(
+        option(uid, names.get(uid, "Discord User"), uid == responder_id) for uid in sorted(responder_ids, key=lambda uid: names.get(uid, "").lower())
+    )
+    service_options = '<option value="">Any service</option>' + "".join(option(k, v, k == service) for k, v in SERVICES.items())
+    priority_options = '<option value="">Any priority</option>' + "".join(option(k, v, k == priority) for k, v in PRIORITIES.items())
+    status_options = '<option value="">Any status</option>' + "".join(option(k, v, k == status) for k, v in STATUSES.items())
+
+    result_rows = "".join(
+        f'<tr><td><a class="incident-link" href="/guild/{guild_id}/incident/{r["incident_number"]}">RESCUE-{r["incident_number"]:04d}</a></td><td><span class="pill {"p1" if r["priority"]=="critical" else "p2" if r["priority"]=="urgent" else "p3"}">{esc(PRIORITIES.get(r["priority"], r["priority"]))}</span></td><td>{esc(STATUSES.get(r["status"], r["status"]))}</td><td>{esc(SERVICES.get(r["service"], r["service"]))}</td><td>{esc(r["callsign"])}</td><td>{esc(r["location"])}</td><td>{esc(names.get(r["primary_responder_id"], "Unassigned") if r["primary_responder_id"] else "Unassigned")}</td><td>{format_dt(r["created_at"])}</td></tr>'
+        for r in rows
+    ) or '<tr><td colspan="8" class="muted">No incidents match the selected filters.</td></tr>'
+
+    total_pages = max(1, (int(total) + page_size - 1) // page_size)
+    if page_num > total_pages and total:
+        page_num = total_pages
+    base_params = {"q": q, "service": service, "priority": priority, "status": status, "responder": responder, "date_from": date_from, "date_to": date_to}
+    prev_params = {**base_params, "page_num": max(1, page_num - 1)}
+    next_params = {**base_params, "page_num": min(total_pages, page_num + 1)}
+    prev_button = f'<a class="btn secondary" href="/guild/{guild_id}/history?{urlencode(prev_params)}">← Previous</a>' if page_num > 1 else '<span></span>'
+    next_button = f'<a class="btn secondary" href="/guild/{guild_id}/history?{urlencode(next_params)}">Next →</a>' if page_num < total_pages else '<span></span>'
+    shown_start = ((page_num - 1) * page_size + 1) if total else 0
+    shown_end = min(page_num * page_size, int(total))
+
+    body = f'''<div class="section-nav"><a href="/guild/{guild_id}">← Back to Dashboard</a></div><div class="card"><div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap"><div><h2>Rescue History Search</h2><p class="muted">Search the complete incident database and filter by service, priority, status, responder, or date.</p></div><div class="status installed">{int(total)} match{'es' if int(total) != 1 else ''}</div></div><form method="get" action="/guild/{guild_id}/history"><div class="filter-grid"><div><label>Search</label><input type="search" name="q" value="{esc(q)}" placeholder="Incident #, callsign, location, situation"></div><div><label>Service</label><select name="service">{service_options}</select></div><div><label>Priority</label><select name="priority">{priority_options}</select></div><div><label>Status</label><select name="status">{status_options}</select></div><div><label>Responder</label><select name="responder">{responder_options}</select></div><div><label>From date</label><input type="date" name="date_from" value="{esc(date_from)}"></div><div><label>To date</label><input type="date" name="date_to" value="{esc(date_to)}"></div><div class="filter-actions"><button class="btn" type="submit">Apply Filters</button><a class="btn secondary" href="/guild/{guild_id}/history">Clear</a></div></div></form></div><div class="card" style="margin-top:16px"><div style="overflow:auto"><table><thead><tr><th>Incident</th><th>Priority</th><th>Status</th><th>Service</th><th>Callsign</th><th>Location</th><th>Primary</th><th>Opened</th></tr></thead><tbody>{result_rows}</tbody></table></div><div class="pagination"><div class="muted">Showing {shown_start}–{shown_end} of {int(total)}</div><div class="pages">{prev_button}<span class="muted">Page {page_num} of {total_pages}</span>{next_button}</div></div></div>'''
+    return page(f"Rescue History · {guild_info['name']}", body, current_user(request))
 
 
 async def load_incident(guild_id, incident_number):
@@ -539,7 +653,7 @@ async def incident_detail(request: Request, guild_id: int, incident_number: int,
     closed = incident["status"] == "closed"
     disabled = " disabled" if closed else ""
     controls = f'''<div class="card span4"><h2>Command Controls</h2><p class="muted">Manager actions update the database, permanent event ledger, Discord incident channel, and live dispatch board.</p><div class="control-grid"><form method="post" action="/guild/{guild_id}/incident/{incident_number}/action"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="action" value="priority_up"><button class="btn danger" type="submit"{disabled}>⬆ Raise Priority</button></form><form method="post" action="/guild/{guild_id}/incident/{incident_number}/action"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="action" value="priority_down"><button class="btn secondary" type="submit"{disabled}>⬇ Lower Priority</button></form><form method="post" action="/guild/{guild_id}/incident/{incident_number}/action"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="action" value="arrived"><button class="btn success" type="submit"{disabled}>📍 Mark Arrived</button></form><form method="post" action="/guild/{guild_id}/incident/{incident_number}/action"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="action" value="backup"><button class="btn warn" type="submit"{disabled}>🛡 Request Backup</button></form><form method="post" action="/guild/{guild_id}/incident/{incident_number}/action" style="grid-column:1/-1"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="action" value="close"><button class="btn danger" type="submit" onclick="return confirm('Close {incident_id}? This will archive the incident and disable its Discord controls.')"{disabled}>🔒 Close Incident</button></form></div><div class="control-note">Web controls are limited to users who have Discord Manage Server permission. Respond and Join Response remain Discord-only responder actions.</div></div>'''
-    body = f'''{action_notice}<div class="section-nav"><a href="/guild/{guild_id}">← Back to Dashboard</a></div><div class="grid"><div class="card span8"><div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap"><div><div class="label">Incident</div><h1 style="margin-top:5px">{incident_id}</h1></div><div><span class="pill {pc}">{esc(PRIORITIES.get(incident['priority'], incident['priority']))}</span> <span class="pill">{esc(STATUSES.get(incident['status'], incident['status']))}</span></div></div><div class="kv" style="margin-top:22px"><div>Callsign</div><div><strong>{esc(incident['callsign'])}</strong></div><div>Service</div><div>{esc(SERVICES.get(incident['service'], incident['service']))}</div><div>Location</div><div>{esc(incident['location'])}</div><div>Requester</div><div>{who(incident['requester_id'], 'Requester')}</div><div>Primary responder</div><div>{who(incident['primary_responder_id'], 'Unassigned')}</div><div>Support responders</div><div>{support_text}</div><div>Created</div><div>{format_dt(incident['created_at'])}</div><div>Claimed</div><div>{format_dt(incident['responded_at'])}</div><div>Arrived</div><div>{format_dt(incident['arrived_at'])}</div><div>Closed</div><div>{format_dt(incident['closed_at'])}</div></div><div style="margin-top:20px">{channel_button}</div></div>{controls}<div class="card span4"><h2>Response Timing</h2><div class="kv"><div>Claim time</div><div>{duration((incident['responded_at']-incident['created_at']).total_seconds()) if incident['responded_at'] else '—'}</div><div>On-scene time</div><div>{duration((incident['arrived_at']-incident['created_at']).total_seconds()) if incident['arrived_at'] else '—'}</div><div>Total duration</div><div>{duration((incident['closed_at']-incident['created_at']).total_seconds()) if incident['closed_at'] else 'Active'}</div></div></div><div class="card span12"><h2>Situation</h2><div class="situation">{esc(incident['situation'])}</div></div><div class="card span12"><h2>Incident Timeline</h2><p class="muted">{esc(timeline_note)}</p><div class="timeline">{timeline}</div></div></div>'''
+    body = f'''{action_notice}<div class="section-nav"><a href="/guild/{guild_id}">← Back to Dashboard</a><a href="/guild/{guild_id}/history">Search History</a></div><div class="grid"><div class="card span8"><div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap"><div><div class="label">Incident</div><h1 style="margin-top:5px">{incident_id}</h1></div><div><span class="pill {pc}">{esc(PRIORITIES.get(incident['priority'], incident['priority']))}</span> <span class="pill">{esc(STATUSES.get(incident['status'], incident['status']))}</span></div></div><div class="kv" style="margin-top:22px"><div>Callsign</div><div><strong>{esc(incident['callsign'])}</strong></div><div>Service</div><div>{esc(SERVICES.get(incident['service'], incident['service']))}</div><div>Location</div><div>{esc(incident['location'])}</div><div>Requester</div><div>{who(incident['requester_id'], 'Requester')}</div><div>Primary responder</div><div>{who(incident['primary_responder_id'], 'Unassigned')}</div><div>Support responders</div><div>{support_text}</div><div>Created</div><div>{format_dt(incident['created_at'])}</div><div>Claimed</div><div>{format_dt(incident['responded_at'])}</div><div>Arrived</div><div>{format_dt(incident['arrived_at'])}</div><div>Closed</div><div>{format_dt(incident['closed_at'])}</div></div><div style="margin-top:20px">{channel_button}</div></div>{controls}<div class="card span4"><h2>Response Timing</h2><div class="kv"><div>Claim time</div><div>{duration((incident['responded_at']-incident['created_at']).total_seconds()) if incident['responded_at'] else '—'}</div><div>On-scene time</div><div>{duration((incident['arrived_at']-incident['created_at']).total_seconds()) if incident['arrived_at'] else '—'}</div><div>Total duration</div><div>{duration((incident['closed_at']-incident['created_at']).total_seconds()) if incident['closed_at'] else 'Active'}</div></div></div><div class="card span12"><h2>Situation</h2><div class="situation">{esc(incident['situation'])}</div></div><div class="card span12"><h2>Incident Timeline</h2><p class="muted">{esc(timeline_note)}</p><div class="timeline">{timeline}</div></div></div>'''
     return page(f"{incident_id} · {guild_info['name']}", body, current_user(request))
 
 
