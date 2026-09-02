@@ -5,6 +5,7 @@ import os
 import discord
 
 import bot as core
+from incident_transitions import transition_incident
 
 logger = logging.getLogger("star-citizen-rescue-bot.config")
 
@@ -120,7 +121,6 @@ def configured_is_responder(member):
 _original_setup_database = core.RescueBot.setup_database
 _original_close = core.RescueBot.close
 _original_create_incident_record = core.RescueBot.create_incident_record
-_original_update_incident = core.RescueBot.update_incident
 _original_update_priority = core.RescueBot.update_priority
 _original_add_responder = core.RescueBot.add_responder
 _original_refresh_dispatch_board = core.RescueBot.refresh_dispatch_board
@@ -183,38 +183,9 @@ async def create_incident_record_with_ledger(self, **values):
     )
 
 
-async def update_incident_with_ledger(self, channel_id, action, user_id=None):
-    before = None
-    if self.db_pool:
-        try:
-            async with self.db_pool.acquire() as conn:
-                before = await conn.fetchrow(
-                    "SELECT status,primary_responder_id,responded_at,arrived_at,closed_at FROM rescue_incidents WHERE channel_id=$1",
-                    channel_id,
-                )
-        except Exception:
-            logger.exception("Failed to read incident before ledger update.")
-    await _original_update_incident(self, channel_id, action, user_id)
-    after = None
-    if self.db_pool:
-        try:
-            async with self.db_pool.acquire() as conn:
-                after = await conn.fetchrow(
-                    "SELECT status,primary_responder_id,responded_at,arrived_at,closed_at FROM rescue_incidents WHERE channel_id=$1",
-                    channel_id,
-                )
-        except Exception:
-            logger.exception("Failed to read incident after ledger update.")
-    if not after:
-        return
-    if action == "respond" and (not before or before["primary_responder_id"] != after["primary_responder_id"]):
-        await record_incident_event(self, channel_id, "primary_assigned", "Primary Responder Assigned", "A responder accepted primary responsibility for the incident.", user_id)
-    elif action == "arrived" and after["arrived_at"] and (not before or before["arrived_at"] is None):
-        await record_incident_event(self, channel_id, "arrived", "Arrived On Scene", "The response team reported arrival on scene.", user_id)
-    elif action == "backup":
-        await record_incident_event(self, channel_id, "backup_requested", "Backup Requested", "Additional responder support was requested.", user_id)
-    elif action == "close" and after["closed_at"] and (not before or before["closed_at"] is None):
-        await record_incident_event(self, channel_id, "closed", "Incident Closed", "The incident was closed by an authorized user.", user_id)
+async def update_incident_atomic(self, channel_id, action, user_id=None):
+    """Use the shared locked transition engine for Discord lifecycle actions."""
+    return await transition_incident(self, channel_id, action, user_id)
 
 
 async def update_priority_with_ledger(self, channel_id, priority, user_id):
@@ -315,10 +286,23 @@ class IncidentControlsViewWithLeave(core.IncidentControlsView):
             return
         if not interaction.message or not interaction.message.embeds:
             return await interaction.response.send_message("I could not find the incident card.", ephemeral=True)
+
+        changed, reason = await core.bot.update_incident(interaction.channel.id, "backup", interaction.user.id)
+        if not changed:
+            messages = {
+                "backup_already_requested": "Backup has already been requested for this incident.",
+                "closed": "This incident is already closed.",
+                "no_primary": "A primary responder must be assigned before requesting backup.",
+                "database_unavailable": "The rescue database is unavailable; backup was not recorded.",
+            }
+            return await interaction.response.send_message(
+                messages.get(reason, "The backup request could not be recorded. Please try again."),
+                ephemeral=True,
+            )
+
         embed = interaction.message.embeds[0].copy()
         self.set_field(embed, "Status", f"🟠 Backup Requested — {interaction.user.mention}")
         await interaction.response.edit_message(embed=embed, view=self)
-        await core.bot.update_incident(interaction.channel.id, "backup", interaction.user.id)
         await core.bot.refresh_dispatch_board(interaction.guild)
         roles = core.all_responder_roles(interaction.guild)
         await interaction.followup.send(
@@ -487,7 +471,7 @@ core.RescueBot.setup_database = setup_database_with_dashboard
 core.RescueBot.setup_hook = setup_hook_multi_guild
 core.RescueBot.close = close_with_dashboard
 core.RescueBot.create_incident_record = create_incident_record_with_ledger
-core.RescueBot.update_incident = update_incident_with_ledger
+core.RescueBot.update_incident = update_incident_atomic
 core.RescueBot.update_priority = update_priority_with_ledger
 core.RescueBot.add_responder = add_responder_with_ledger
 core.RescueBot.remove_responder = remove_responder_with_ledger
