@@ -14,8 +14,15 @@ PRIORITY_SHORT = {
 }
 
 
+def _optional(row, key, default=None):
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
 class IncidentUXView(atomic.AtomicIncidentControlsView):
-    """Same atomic callbacks, with clearer labels/rows and DB-state button disabling."""
+    """Same atomic callbacks, with clearer labels and DB-state button disabling."""
 
     def __init__(self, *, status=None, priority=None, primary_id=None, arrived_at=None, backup_requested_at=None):
         super().__init__()
@@ -57,17 +64,9 @@ def incident_view_for_row(row):
         status=row["status"],
         priority=row["priority"],
         primary_id=row["primary_responder_id"],
-        arrived_at=row.get("arrived_at") if hasattr(row, "get") else row["arrived_at"],
-        backup_requested_at=row.get("backup_requested_at") if hasattr(row, "get") else row["backup_requested_at"],
+        arrived_at=_optional(row, "arrived_at"),
+        backup_requested_at=_optional(row, "backup_requested_at"),
     )
-
-
-def _set_or_add(embed, name, value, inline):
-    for index, field in enumerate(embed.fields):
-        if field.name == name:
-            embed.set_field_at(index, name=name, value=value, inline=inline)
-            return
-    embed.add_field(name=name, value=value, inline=inline)
 
 
 def _status_heading(row):
