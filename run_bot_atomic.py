@@ -114,6 +114,28 @@ class AtomicIncidentControlsView(extended.IncidentControlsViewWithLeave):
         )
 
 
+async def dispatch_board_setup_with_dashboard(interaction):
+    """Create/move the board with its dashboard link attached from the first message."""
+    if interaction.guild is None or not isinstance(interaction.channel, discord.TextChannel):
+        return await interaction.response.send_message("Run this command in a server text channel.", ephemeral=True)
+    if not core.bot.db_pool:
+        return await interaction.response.send_message(
+            "The dispatch board requires PostgreSQL online.", ephemeral=True
+        )
+    await interaction.response.defer(ephemeral=True)
+    message = await interaction.channel.send(
+        embed=await core.bot.build_dispatch_board_embed(interaction.guild),
+        view=extended.dispatch_board_view(),
+    )
+    await core.bot.save_dispatch_board(interaction.guild.id, interaction.channel.id, message.id)
+    await interaction.followup.send(f"Live dispatch board created: {message.jump_url}", ephemeral=True)
+
+
+# The slash command object was registered when bot.py imported. Replacing its
+# callback keeps the command registration/error handler intact while ensuring
+# every newly-created board gets the web-dashboard link immediately.
+core.dispatch_board_setup.callback = dispatch_board_setup_with_dashboard
+
 core.RescueBot.update_priority = update_priority_atomic
 core.RescueBot.add_responder = add_responder_atomic
 core.RescueBot.remove_responder = remove_responder_atomic
