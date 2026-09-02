@@ -126,7 +126,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         message.edit.assert_awaited_once()
         edited = message.edit.await_args.kwargs["embed"]
         fields = {field.name: field.value for field in edited.fields}
-        self.assertEqual(fields["Priority"], "P1 Critical")
+        self.assertEqual(fields["Priority"], recovery.core.PRIORITY_DISPLAY["critical"])
         self.assertEqual(fields["Status"], "🟢 On Scene — <@300>")
         self.assertEqual(fields["Primary Responder"], "<@300>")
         self.assertEqual(edited.color, discord.Color.green())
@@ -172,7 +172,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         fields = {field.name: field.value for field in embed.fields}
 
         self.assertIn("CLOSED RESCUE REQUEST", embed.title)
-        self.assertEqual(fields["Priority"], "P1 Critical")
+        self.assertEqual(fields["Priority"], recovery.core.PRIORITY_DISPLAY["critical"])
         self.assertEqual(fields["Status"], "⚫ Closed — <@400>")
         self.assertEqual(embed.color, discord.Color.dark_grey())
 
