@@ -7,6 +7,7 @@ import bot_incident_ux  # noqa: F401 - installs polished incident cards and stat
 import bot_dispatch_board_ux  # noqa: F401 - installs polished live dispatch board
 import bot_request_ux  # noqa: F401 - installs polished request-assistance flow
 import bot_rescue_log_ux  # noqa: F401 - installs polished completed rescue records
+import bot_command_ux  # noqa: F401 - installs polished slash commands and request panel
 
 
 if __name__ == "__main__":
