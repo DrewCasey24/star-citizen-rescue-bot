@@ -131,10 +131,10 @@ async def dispatch_board_setup_with_dashboard(interaction):
     await interaction.followup.send(f"Live dispatch board created: {message.jump_url}", ephemeral=True)
 
 
-# The slash command object was registered when bot.py imported. Replacing its
-# callback keeps the command registration/error handler intact while ensuring
-# every newly-created board gets the web-dashboard link immediately.
-core.dispatch_board_setup.callback = dispatch_board_setup_with_dashboard
+# discord.app_commands.Command.callback is read-only. The command stores the
+# registered callable in _callback internally, so update that backing callback
+# while preserving the existing command object, checks, and error handler.
+core.dispatch_board_setup._callback = dispatch_board_setup_with_dashboard
 
 core.RescueBot.update_priority = update_priority_atomic
 core.RescueBot.add_responder = add_responder_atomic
