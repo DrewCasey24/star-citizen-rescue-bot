@@ -26,11 +26,16 @@ class IncidentUXView(atomic.AtomicIncidentControlsView):
 
     def __init__(self, *, status=None, priority=None, primary_id=None, arrived_at=None, backup_requested_at=None):
         super().__init__()
-        closed = status == "closed"
-        has_primary = primary_id is not None
-        arrived = bool(arrived_at) or status == "on_scene"
-        backup_requested = bool(backup_requested_at) or status == "backup_requested"
+        self._apply_state(
+            status=status,
+            priority=priority,
+            has_primary=primary_id is not None,
+            arrived=bool(arrived_at) or status == "on_scene",
+            backup_requested=bool(backup_requested_at) or status == "backup_requested",
+        )
 
+    def _apply_state(self, *, status=None, priority=None, has_primary=False, arrived=False, backup_requested=False):
+        closed = status == "closed"
         for item in self.children:
             cid = getattr(item, "custom_id", None)
             if cid == "rescue:respond":
@@ -57,6 +62,24 @@ class IncidentUXView(atomic.AtomicIncidentControlsView):
             elif cid == "rescue:priority-down":
                 item.label = "Lower Priority"
                 item.disabled = closed or priority == "standard"
+
+    def _sync_from_embed(self, embed):
+        fields = {field.name: field.value for field in embed.fields}
+        status_text = fields.get("Status", "")
+        primary_text = fields.get("Primary Responder", "Unassigned")
+        closed = "Closed" in status_text
+        status = "closed" if closed else "on_scene" if "On Scene" in status_text else "backup_requested" if "Backup Requested" in status_text else "en_route" if "En Route" in status_text else "awaiting_responder"
+        self._apply_state(
+            status=status,
+            priority=core.priority_from_embed(embed),
+            has_primary=primary_text != "Unassigned",
+            arrived="On Scene" in status_text,
+            backup_requested="Backup Requested" in status_text,
+        )
+
+    def set_field(self, embed, name, value):
+        super().set_field(embed, name, value)
+        self._sync_from_embed(embed)
 
 
 def incident_view_for_row(row):
