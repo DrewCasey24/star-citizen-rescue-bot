@@ -96,12 +96,15 @@ async def transition_incident(bot, channel_id, action, actor_id=None):
         return False, "database_error"
 
 
-async def transition_priority(bot, channel_id, priority, actor_id):
-    """Change priority and ledger it under the incident lock."""
+async def transition_priority(bot, channel_id, priority, actor_id, expected_priority=None):
+    """Compare-and-set priority under the incident lock; return (changed, reason)."""
+    valid_priorities = {"critical", "urgent", "standard"}
     if not bot.db_pool:
         return False, "database_unavailable"
-    if priority not in {"critical", "urgent", "standard"}:
+    if priority not in valid_priorities:
         return False, "invalid_priority"
+    if expected_priority is not None and expected_priority not in valid_priorities:
+        return False, "invalid_expected_priority"
     try:
         async with bot.db_pool.acquire() as conn:
             async with conn.transaction():
@@ -111,6 +114,8 @@ async def transition_priority(bot, channel_id, priority, actor_id):
                 if incident["status"] == "closed" or incident["closed_at"] is not None:
                     return False, "closed"
                 previous = incident["priority"]
+                if expected_priority is not None and previous != expected_priority:
+                    return False, "stale_priority"
                 if previous == priority:
                     return False, "unchanged"
                 await conn.execute(
