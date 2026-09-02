@@ -163,14 +163,70 @@ async def _repair_closed_channel(channel, row):
     return changed
 
 
+async def _retire_missing_channel_incident(bot, row):
+    """Retire an incident only after Discord confirms its channel no longer exists."""
+    async with bot.db_pool.acquire() as conn:
+        async with conn.transaction():
+            incident = await conn.fetchrow(
+                "SELECT status FROM rescue_incidents WHERE guild_id=$1 AND incident_number=$2 FOR UPDATE",
+                row["guild_id"], row["incident_number"],
+            )
+            if not incident:
+                return False
+            if incident["status"] != "closed":
+                await conn.execute(
+                    """UPDATE rescue_incidents
+                       SET status='closed', closed_at=COALESCE(closed_at,NOW()),
+                           incident_message_id=NULL, discord_channel_missing_at=NOW()
+                       WHERE guild_id=$1 AND incident_number=$2""",
+                    row["guild_id"], row["incident_number"],
+                )
+                await conn.execute(
+                    """INSERT INTO rescue_incident_events
+                       (guild_id,incident_number,channel_id,event_type,actor_id,title,details,created_at)
+                       VALUES($1,$2,$3,'discord_channel_missing',NULL,
+                              'Discord Channel Missing',
+                              'Incident was automatically retired after Discord confirmed the saved incident channel no longer exists.',NOW())""",
+                    row["guild_id"], row["incident_number"], row["channel_id"],
+                )
+            else:
+                await conn.execute(
+                    """UPDATE rescue_incidents
+                       SET incident_message_id=NULL, discord_channel_missing_at=COALESCE(discord_channel_missing_at,NOW())
+                       WHERE guild_id=$1 AND incident_number=$2""",
+                    row["guild_id"], row["incident_number"],
+                )
+    logger.warning(
+        "Retired RESCUE-%04d from Discord recovery because channel %s no longer exists.",
+        row["incident_number"], row["channel_id"],
+    )
+    return True
+
+
 async def repair_incident(bot, row):
     guild = bot.get_guild(row["guild_id"])
     if guild is None:
         return False
     channel = guild.get_channel(row["channel_id"])
     if not isinstance(channel, discord.TextChannel):
-        logger.warning("Recovery could not find Discord channel %s for RESCUE-%04d.", row["channel_id"], row["incident_number"])
-        return False
+        try:
+            fetched = await guild.fetch_channel(row["channel_id"])
+        except discord.NotFound:
+            await _retire_missing_channel_incident(bot, row)
+            return False
+        except (discord.Forbidden, discord.HTTPException):
+            logger.warning(
+                "Recovery could not verify Discord channel %s for RESCUE-%04d; leaving the database unchanged.",
+                row["channel_id"], row["incident_number"],
+            )
+            return False
+        channel = fetched if isinstance(fetched, discord.TextChannel) else None
+        if channel is None:
+            logger.warning(
+                "Recovery found channel %s for RESCUE-%04d, but it is not a text channel.",
+                row["channel_id"], row["incident_number"],
+            )
+            return False
 
     await _repair_card(bot, channel, row)
     if row["status"] == "closed":
@@ -183,6 +239,7 @@ async def recovery_pass(bot):
         return
     async with bot.db_pool.acquire() as conn:
         await conn.execute("ALTER TABLE rescue_incidents ADD COLUMN IF NOT EXISTS incident_message_id BIGINT")
+        await conn.execute("ALTER TABLE rescue_incidents ADD COLUMN IF NOT EXISTS discord_channel_missing_at TIMESTAMPTZ")
         rows = await conn.fetch(
             """
             SELECT guild_id,incident_number,channel_id,requester_id,callsign,service,
@@ -190,6 +247,7 @@ async def recovery_pass(bot):
                    incident_message_id,closed_at
             FROM rescue_incidents
             WHERE channel_id IS NOT NULL
+              AND discord_channel_missing_at IS NULL
               AND (status <> 'closed' OR closed_at >= NOW() - ($1 * INTERVAL '1 hour'))
             ORDER BY created_at DESC
             LIMIT 100
