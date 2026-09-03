@@ -20,6 +20,7 @@ import dashboard_hardening  # migrations, Discord retries, structured logs, and 
 import dashboard_retention  # disabled-by-default configurable data retention
 import dashboard_admin_audit  # Manage-Server audit viewer and admin-tool shortcuts
 import dashboard_billing  # guild entitlements, Paddle checkout, and signed subscription webhooks
+import dashboard_subscription_management  # upgrades/downgrades existing Paddle subscriptions in place
 import dashboard_backup_health  # surfaces provider backup/restore verification state
 import dashboard_health_nav  # adds System Health to the shared sidebar
 import dashboard_error_pages  # replaces raw FastAPI/JSON failures with dashboard-styled recovery pages
