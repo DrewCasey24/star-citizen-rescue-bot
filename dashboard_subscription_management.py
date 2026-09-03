@@ -1,4 +1,4 @@
-"""Paid-plan changes that update an existing Paddle subscription instead of creating duplicates."""
+"""Paid-plan changes and authoritative Paddle entitlement reconciliation."""
 
 import logging
 import os
@@ -31,9 +31,16 @@ def _proration_mode(current_plan: str, target_plan: str) -> str:
     return "prorated_next_billing_period"
 
 
-async def _change_paddle_subscription(subscription_id: str, target_plan: str, current_plan: str):
+def _headers():
     if not PADDLE_API_KEY:
         raise HTTPException(status_code=503, detail="Paddle server API key is not configured.")
+    return {
+        "Authorization": f"Bearer {PADDLE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+
+async def _change_paddle_subscription(subscription_id: str, target_plan: str, current_plan: str):
     price_id = _target_price(target_plan)
     if not price_id:
         raise HTTPException(status_code=503, detail="The selected Paddle price is not configured.")
@@ -42,14 +49,10 @@ async def _change_paddle_subscription(subscription_id: str, target_plan: str, cu
         "items": [{"price_id": price_id, "quantity": 1}],
         "proration_billing_mode": _proration_mode(current_plan, target_plan),
     }
-    headers = {
-        "Authorization": f"Bearer {PADDLE_API_KEY}",
-        "Content-Type": "application/json",
-    }
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.patch(
             f"{PADDLE_API_BASE}/subscriptions/{subscription_id}",
-            headers=headers,
+            headers=_headers(),
             json=payload,
         )
     if response.status_code >= 400:
@@ -62,6 +65,116 @@ async def _change_paddle_subscription(subscription_id: str, target_plan: str, cu
         )
         raise HTTPException(status_code=502, detail="Paddle could not update the subscription. Please try again shortly.")
     return response.json()
+
+
+def _plan_from_subscription(data: dict) -> str | None:
+    for item in data.get("items") or []:
+        price = item.get("price") or {}
+        price_id = price.get("id") or item.get("price_id")
+        if price_id == billing.PADDLE_PRO_PRICE_ID:
+            return "pro"
+        if price_id == billing.PADDLE_COMMAND_PRICE_ID:
+            return "command"
+    return None
+
+
+def _subscription_belongs_to_guild(data: dict, guild_id: int) -> bool:
+    custom = data.get("custom_data") or {}
+    try:
+        return int(custom.get("guild_id")) == int(guild_id)
+    except (TypeError, ValueError):
+        return False
+
+
+async def _find_authoritative_subscription(guild_id: int):
+    """Ask Paddle for active-like subscriptions and choose this guild's highest paid plan."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{PADDLE_API_BASE}/subscriptions",
+            headers=_headers(),
+            params={"status": "active,trialing,past_due", "per_page": 200},
+        )
+    if response.status_code >= 400:
+        logger.error(
+            "operational_event component=billing action=resync_list_failed guild_id=%s status=%s body=%s",
+            guild_id,
+            response.status_code,
+            response.text[:500],
+        )
+        raise HTTPException(status_code=502, detail="Paddle could not be queried for active subscriptions.")
+
+    candidates = []
+    for sub in (response.json().get("data") or []):
+        if not _subscription_belongs_to_guild(sub, guild_id):
+            continue
+        plan = _plan_from_subscription(sub)
+        if plan not in {"pro", "command"}:
+            continue
+        candidates.append((PLAN_ORDER[plan], sub, plan))
+    if not candidates:
+        return None, None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    _, sub, plan = candidates[0]
+    return sub, plan
+
+
+async def _store_authoritative_subscription(guild_id: int, data: dict, plan: str):
+    status = data.get("status") or "unknown"
+    period_end = billing._period_end(data)
+    customer_id = data.get("customer_id")
+    subscription_id = data.get("id")
+    price_id = billing.PADDLE_PRO_PRICE_ID if plan == "pro" else billing.PADDLE_COMMAND_PRICE_ID
+    grace_until = None
+    if status == "past_due":
+        from datetime import datetime, timedelta, timezone
+        grace_until = datetime.now(timezone.utc) + timedelta(days=billing.PAST_DUE_GRACE_DAYS)
+
+    async with base.pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO rescue_guild_entitlements(
+                guild_id,plan,billing_status,paddle_customer_id,paddle_subscription_id,
+                paddle_price_id,current_period_end,grace_until,source,updated_at
+            ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'paddle',NOW())
+            ON CONFLICT(guild_id) DO UPDATE SET
+                plan=EXCLUDED.plan,
+                billing_status=EXCLUDED.billing_status,
+                paddle_customer_id=EXCLUDED.paddle_customer_id,
+                paddle_subscription_id=EXCLUDED.paddle_subscription_id,
+                paddle_price_id=EXCLUDED.paddle_price_id,
+                current_period_end=EXCLUDED.current_period_end,
+                grace_until=EXCLUDED.grace_until,
+                source='paddle',
+                updated_at=NOW()
+            """,
+            guild_id,
+            plan,
+            status,
+            customer_id,
+            subscription_id,
+            price_id,
+            period_end,
+            grace_until,
+        )
+
+
+@base.app.post("/guild/{guild_id}/billing/resync")
+async def resync_billing(request: Request, guild_id: int):
+    base.require_guild_access(request, guild_id)
+    form = await request.form()
+    base.require_csrf(request, form.get("csrf"))
+    subscription, plan = await _find_authoritative_subscription(guild_id)
+    if not subscription or not plan:
+        return RedirectResponse(f"/guild/{guild_id}/billing?sync=none", status_code=303)
+    await _store_authoritative_subscription(guild_id, subscription, plan)
+    logger.info(
+        "operational_event component=billing action=authoritative_resync guild_id=%s subscription_id=%s plan=%s status=%s",
+        guild_id,
+        subscription.get("id"),
+        plan,
+        subscription.get("status"),
+    )
+    return RedirectResponse(f"/guild/{guild_id}/billing?sync=ok", status_code=303)
 
 
 @base.app.post("/guild/{guild_id}/billing/change-plan")
@@ -126,11 +239,10 @@ async def billing_page_with_subscription_changes(request: Request, guild_id: int
               AND created.subscription_id IS NOT NULL
               AND created.event_type='subscription.created'
               AND NOT EXISTS (
-                  SELECT 1
-                  FROM rescue_billing_webhook_events ended
-                  WHERE ended.guild_id=created.guild_id
-                    AND ended.subscription_id=created.subscription_id
-                    AND ended.event_type='subscription.canceled'
+                  SELECT 1 FROM rescue_billing_webhook_events canceled
+                  WHERE canceled.guild_id=created.guild_id
+                    AND canceled.subscription_id=created.subscription_id
+                    AND canceled.event_type='subscription.canceled'
               )
             """,
             guild_id,
@@ -163,16 +275,30 @@ async def billing_page_with_subscription_changes(request: Request, guild_id: int
             f'</form>'
         ) if PADDLE_API_KEY else '<button class="btn secondary" type="button" disabled>Plan changes need Paddle API key</button>'
         html = html.replace(old_button, new_button, 1)
+    elif PADDLE_API_KEY and row and row["source"] == "paddle":
+        sync_form = (
+            f'<form method="post" action="/guild/{guild_id}/billing/resync" style="margin-top:10px">'
+            f'<input type="hidden" name="csrf" value="{csrf}">'
+            '<button class="btn secondary" type="submit">Sync Active Plan from Paddle</button>'
+            '</form>'
+        )
+        html = html.replace('</div><div class="billing-grid">', sync_form + '</div><div class="billing-grid">', 1)
 
     if request.query_params.get("change") == "pending":
         notice = '<div class="notice"><strong>Plan change submitted to Paddle.</strong> The page will update when the signed subscription webhook arrives. Refresh in a few seconds if the new plan is not visible yet.</div>'
+        html = html.replace('<div class="card billing-status">', notice + '<div class="card billing-status">', 1)
+    if request.query_params.get("sync") == "ok":
+        notice = '<div class="notice"><strong>Billing synchronized with Paddle.</strong> The active subscription below was refreshed directly from Paddle.</div>'
+        html = html.replace('<div class="card billing-status">', notice + '<div class="card billing-status">', 1)
+    elif request.query_params.get("sync") == "none":
+        notice = '<div class="notice" style="border-color:#79551e;background:#2e2312;color:#ffd39a"><strong>No active paid subscription was found in Paddle for this server.</strong></div>'
         html = html.replace('<div class="card billing-status">', notice + '<div class="card billing-status">', 1)
 
     if active_subscription_count > 1:
         duplicate_notice = (
             '<div class="notice" style="border-color:#79551e;background:#2e2312;color:#ffd39a">'
             '<strong>Multiple active Paddle subscriptions detected for this server.</strong> '
-            'Cancel the older duplicate subscription in Paddle so only the intended current plan remains active.'
+            'Cancel the older duplicate subscription in Paddle so only the current plan remains active.'
             '</div>'
         )
         html = html.replace('<div class="card billing-status">', duplicate_notice + '<div class="card billing-status">', 1)
