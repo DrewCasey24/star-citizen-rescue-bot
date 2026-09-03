@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import dashboard_billing as billing
+import dashboard_subscription_management as subscriptions
 from entitlements import GuildEntitlement, plan_at_least
 
 
@@ -72,6 +73,28 @@ class PaddleWebhookTests(unittest.TestCase):
         }
         with patch.object(billing, "PRICE_TO_PLAN", {"pri_real_pro": "pro"}):
             self.assertEqual(billing._subscription_plan(data), "pro")
+
+
+class PaddleSubscriptionManagementTests(unittest.TestCase):
+    def test_upgrade_prorates_immediately(self):
+        self.assertEqual(
+            subscriptions._proration_mode("pro", "command"),
+            "prorated_immediately",
+        )
+
+    def test_downgrade_prorates_next_billing_period(self):
+        self.assertEqual(
+            subscriptions._proration_mode("command", "pro"),
+            "prorated_next_billing_period",
+        )
+
+    def test_target_price_uses_configured_price_ids(self):
+        with patch.object(billing, "PADDLE_PRO_PRICE_ID", "pri_pro"), patch.object(
+            billing, "PADDLE_COMMAND_PRICE_ID", "pri_command"
+        ):
+            self.assertEqual(subscriptions._target_price("pro"), "pri_pro")
+            self.assertEqual(subscriptions._target_price("command"), "pri_command")
+            self.assertEqual(subscriptions._target_price("free"), "")
 
 
 if __name__ == "__main__":
