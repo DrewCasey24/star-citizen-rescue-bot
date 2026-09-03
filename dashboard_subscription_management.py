@@ -118,12 +118,20 @@ async def billing_page_with_subscription_changes(request: Request, guild_id: int
             """,
             guild_id,
         )
-        distinct_subscription_count = int(await conn.fetchval(
+        active_subscription_count = int(await conn.fetchval(
             """
-            SELECT COUNT(DISTINCT subscription_id)
-            FROM rescue_billing_webhook_events
-            WHERE guild_id=$1 AND subscription_id IS NOT NULL
-              AND event_type='subscription.created'
+            SELECT COUNT(DISTINCT created.subscription_id)
+            FROM rescue_billing_webhook_events created
+            WHERE created.guild_id=$1
+              AND created.subscription_id IS NOT NULL
+              AND created.event_type='subscription.created'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM rescue_billing_webhook_events ended
+                  WHERE ended.guild_id=created.guild_id
+                    AND ended.subscription_id=created.subscription_id
+                    AND ended.event_type='subscription.canceled'
+              )
             """,
             guild_id,
         ) or 0)
@@ -160,12 +168,11 @@ async def billing_page_with_subscription_changes(request: Request, guild_id: int
         notice = '<div class="notice"><strong>Plan change submitted to Paddle.</strong> The page will update when the signed subscription webhook arrives. Refresh in a few seconds if the new plan is not visible yet.</div>'
         html = html.replace('<div class="card billing-status">', notice + '<div class="card billing-status">', 1)
 
-    if distinct_subscription_count > 1:
+    if active_subscription_count > 1:
         duplicate_notice = (
             '<div class="notice" style="border-color:#79551e;background:#2e2312;color:#ffd39a">'
-            '<strong>Multiple Paddle subscriptions detected for this server.</strong> '
-            'This was created during sandbox testing before in-place plan changes were enabled. '
-            'Cancel the older duplicate subscription in Paddle so only the current plan remains active.'
+            '<strong>Multiple active Paddle subscriptions detected for this server.</strong> '
+            'Cancel the older duplicate subscription in Paddle so only the intended current plan remains active.'
             '</div>'
         )
         html = html.replace('<div class="card billing-status">', duplicate_notice + '<div class="card billing-status">', 1)
