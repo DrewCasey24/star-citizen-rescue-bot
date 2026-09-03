@@ -16,8 +16,9 @@ import dashboard_discord_consistency  # surfaces incomplete Discord synchronizat
 import dashboard_health  # adds live database, Discord, configuration, board, and incident-card checks
 import dashboard_config_repair  # removes saved Discord role/channel references that no longer exist
 import dashboard_operations_center  # unifies incident management, audit, responder routing, and channel integrity
-import dashboard_hardening  # migrations, Discord retries, structured logs, and admin audit
+import dashboard_hardening  # migrations, Discord retries, structured logs, and admin audit persistence
 import dashboard_retention  # disabled-by-default configurable data retention
+import dashboard_admin_audit  # Manage-Server audit viewer and admin-tool shortcuts
 import dashboard_health_nav  # adds System Health to the shared sidebar
 import dashboard_error_pages  # replaces raw FastAPI/JSON failures with dashboard-styled recovery pages
 from dashboard_core import app
