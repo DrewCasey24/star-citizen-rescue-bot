@@ -88,6 +88,19 @@ def _checkout_ready(plan: str) -> bool:
     return bool(PADDLE_CLIENT_TOKEN and price)
 
 
+def _accept_subscription_event(
+    existing_subscription_id: str | None,
+    existing_status: str | None,
+    incoming_subscription_id: str | None,
+) -> bool:
+    """Protect a currently linked paid subscription from events for an older/duplicate one."""
+    if not existing_subscription_id or not incoming_subscription_id:
+        return True
+    if existing_subscription_id == incoming_subscription_id:
+        return True
+    return existing_status not in {"active", "trialing", "past_due"}
+
+
 @base.app.get("/guild/{guild_id}/billing", response_class=HTMLResponse)
 async def billing_page(request: Request, guild_id: int):
     guild = base.require_guild_access(request, guild_id)
@@ -184,6 +197,32 @@ async def paddle_webhook(request: Request):
                     "SELECT guild_id FROM rescue_guild_entitlements WHERE paddle_subscription_id=$1",
                     subscription_id,
                 )
+
+            existing = None
+            if guild_id is not None:
+                existing = await conn.fetchrow(
+                    "SELECT paddle_subscription_id,billing_status FROM rescue_guild_entitlements WHERE guild_id=$1",
+                    guild_id,
+                )
+            if existing and not _accept_subscription_event(
+                existing["paddle_subscription_id"],
+                existing["billing_status"],
+                subscription_id,
+            ):
+                await conn.execute(
+                    "UPDATE rescue_billing_webhook_events SET guild_id=$2,result='stale_subscription',processed_at=NOW() WHERE event_id=$1",
+                    event_id,
+                    guild_id,
+                )
+                logger.warning(
+                    "operational_event component=billing action=stale_subscription_ignored guild_id=%s current_subscription_id=%s incoming_subscription_id=%s event_type=%s",
+                    guild_id,
+                    existing["paddle_subscription_id"],
+                    subscription_id,
+                    event_type,
+                )
+                return JSONResponse({"ok": True, "stale_subscription": True})
+
             if plan is None and subscription_id:
                 plan = await conn.fetchval(
                     "SELECT plan FROM rescue_guild_entitlements WHERE paddle_subscription_id=$1",
