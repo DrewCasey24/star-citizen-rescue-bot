@@ -5,6 +5,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -12,7 +13,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 import dashboard_core as base
-from entitlements import GuildEntitlement, PLAN_FEATURES, get_guild_entitlement
+from entitlements import PLAN_FEATURES, get_guild_entitlement
 
 logger = logging.getLogger("star-citizen-rescue-dashboard.billing")
 
@@ -66,15 +67,20 @@ def _subscription_plan(data: dict) -> str | None:
     return None
 
 
-def _period_end(data: dict):
-    period = data.get("current_billing_period") or {}
-    value = period.get("ends_at") or data.get("next_billed_at")
+def _parse_datetime(value):
     if not value:
         return None
+    if isinstance(value, datetime):
+        return value
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
+
+
+def _period_end(data: dict):
+    period = data.get("current_billing_period") or {}
+    return _parse_datetime(period.get("ends_at") or data.get("next_billed_at"))
 
 
 def _checkout_ready(plan: str) -> bool:
@@ -153,6 +159,7 @@ async def paddle_webhook(request: Request):
     plan = _subscription_plan(data)
     status = data.get("status") or "unknown"
     period_end = _period_end(data)
+    occurred_at = _parse_datetime(event.get("occurred_at"))
 
     async with base.pool.acquire() as conn:
         async with conn.transaction():
@@ -167,7 +174,7 @@ async def paddle_webhook(request: Request):
                 event_type,
                 subscription_id,
                 guild_id,
-                event.get("occurred_at"),
+                occurred_at,
             )
             if not inserted:
                 return JSONResponse({"ok": True, "duplicate": True})
@@ -200,13 +207,12 @@ async def paddle_webhook(request: Request):
                 return JSONResponse({"ok": True, "unmapped": True})
 
             grace_until = datetime.now(timezone.utc) + timedelta(days=PAST_DUE_GRACE_DAYS) if status == "past_due" else None
-            source = "paddle"
             await conn.execute(
                 """
                 INSERT INTO rescue_guild_entitlements(
                     guild_id,plan,billing_status,paddle_customer_id,paddle_subscription_id,
                     paddle_price_id,current_period_end,grace_until,source,updated_at
-                ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+                ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'paddle',NOW())
                 ON CONFLICT(guild_id) DO UPDATE SET
                     plan=EXCLUDED.plan,
                     billing_status=EXCLUDED.billing_status,
@@ -219,7 +225,7 @@ async def paddle_webhook(request: Request):
                         THEN rescue_guild_entitlements.grace_until
                         ELSE EXCLUDED.grace_until
                     END,
-                    source=EXCLUDED.source,
+                    source='paddle',
                     updated_at=NOW()
                 """,
                 guild_id,
@@ -230,7 +236,6 @@ async def paddle_webhook(request: Request):
                 PADDLE_PRO_PRICE_ID if plan == "pro" else PADDLE_COMMAND_PRICE_ID,
                 period_end,
                 grace_until,
-                source,
             )
             await conn.execute(
                 "UPDATE rescue_billing_webhook_events SET guild_id=$2,result='processed',processed_at=NOW() WHERE event_id=$1",
@@ -247,11 +252,10 @@ _previous_page = base.page
 
 def page_with_billing_link(title, body, user=None):
     if title.startswith("Operations Center ·") and "Billing & Plans" not in body:
-        import re
         match = re.search(r'/guild/(\d+)/operations', body)
         if match:
             guild_id = match.group(1)
-            needle = f'<a class="btn secondary" href="/guild/{guild_id}/admin-audit">Administrative Audit</a>'
+            needle = f'<a class="btn secondary" href="/guild/{guild_id}/repair-config">Repair Configuration</a>'
             replacement = needle + f'<a class="btn secondary" href="/guild/{guild_id}/billing">Billing & Plans</a>'
             body = body.replace(needle, replacement, 1)
     return _previous_page(title, body, user)
