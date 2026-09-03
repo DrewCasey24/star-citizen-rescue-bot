@@ -2,8 +2,8 @@
 
 import bot as core
 import transition_logging  # noqa: F401 - wraps authoritative transitions with structured logs
-import bot_hardening  # noqa: F401 - installs migrations and operational logging
-import run_bot_cas  # noqa: F401 - installs atomic/CAS patches using logged transitions
+import run_bot_cas  # noqa: F401 - installs dashboard config, atomic, and CAS patches using logged transitions
+import bot_hardening  # noqa: F401 - wraps the final database setup with migrations
 import bot_discord_recovery  # noqa: F401 - installs periodic Discord reconciliation
 import bot_incident_ux  # noqa: F401 - installs polished incident cards and state-aware controls
 import bot_dispatch_board_ux  # noqa: F401 - installs polished live dispatch board
