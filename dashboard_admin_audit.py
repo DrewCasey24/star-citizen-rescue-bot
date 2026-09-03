@@ -39,7 +39,7 @@ _previous_page = base.page
 
 def page_with_admin_tools(title, body, user=None):
     if title.startswith("Operations Center ·"):
-        match = re.search(r'/guild/(\d+)/operations', body)
+        match = re.search(r'/guild/(\d+)/', body)
         if match and "Administrative Audit" not in body:
             guild_id = match.group(1)
             needle = f'<a class="btn secondary" href="/guild/{guild_id}/repair-config">Repair Configuration</a>'
