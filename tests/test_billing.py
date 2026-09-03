@@ -74,6 +74,24 @@ class PaddleWebhookTests(unittest.TestCase):
         with patch.object(billing, "PRICE_TO_PLAN", {"pri_real_pro": "pro"}):
             self.assertEqual(billing._subscription_plan(data), "pro")
 
+    def test_event_for_current_subscription_is_accepted(self):
+        self.assertTrue(
+            billing._accept_subscription_event("sub_command", "active", "sub_command")
+        )
+
+    def test_old_subscription_event_cannot_replace_active_current_subscription(self):
+        self.assertFalse(
+            billing._accept_subscription_event("sub_command", "active", "sub_old_pro")
+        )
+        self.assertFalse(
+            billing._accept_subscription_event("sub_command", "past_due", "sub_old_pro")
+        )
+
+    def test_new_subscription_can_replace_inactive_old_subscription(self):
+        self.assertTrue(
+            billing._accept_subscription_event("sub_old_pro", "canceled", "sub_command")
+        )
+
 
 class PaddleSubscriptionManagementTests(unittest.TestCase):
     def test_upgrade_prorates_immediately(self):
