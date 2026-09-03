@@ -165,7 +165,8 @@ async def billing_page_with_subscription_changes(request: Request, guild_id: int
             '<div class="notice" style="border-color:#79551e;background:#2e2312;color:#ffd39a">'
             '<strong>Multiple Paddle subscriptions detected for this server.</strong> '
             'This was created during sandbox testing before in-place plan changes were enabled. '
-            'Cancel the older duplicate subscription in Paddle so only the current plan remains active.'</n            'div>'
+            'Cancel the older duplicate subscription in Paddle so only the current plan remains active.'
+            '</div>'
         )
         html = html.replace('<div class="card billing-status">', duplicate_notice + '<div class="card billing-status">', 1)
 
