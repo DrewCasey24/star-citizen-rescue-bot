@@ -70,6 +70,40 @@ MIGRATIONS = [
         ON rescue_incident_events(guild_id, created_at DESC, id DESC);
         """,
     ),
+    (
+        3,
+        "guild_subscriptions",
+        """
+        CREATE TABLE IF NOT EXISTS rescue_guild_entitlements (
+            guild_id BIGINT PRIMARY KEY,
+            plan TEXT NOT NULL DEFAULT 'free' CHECK (plan IN ('free','pro','command')),
+            billing_status TEXT NOT NULL DEFAULT 'none',
+            paddle_customer_id TEXT,
+            paddle_subscription_id TEXT UNIQUE,
+            paddle_price_id TEXT,
+            current_period_end TIMESTAMPTZ,
+            grace_until TIMESTAMPTZ,
+            source TEXT NOT NULL DEFAULT 'default' CHECK (source IN ('default','paddle','manual')),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS rescue_billing_webhook_events (
+            event_id TEXT PRIMARY KEY,
+            event_type TEXT NOT NULL,
+            subscription_id TEXT,
+            guild_id BIGINT,
+            result TEXT NOT NULL DEFAULT 'processing',
+            occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            processed_at TIMESTAMPTZ
+        );
+
+        CREATE INDEX IF NOT EXISTS rescue_billing_webhook_events_guild_idx
+        ON rescue_billing_webhook_events(guild_id, occurred_at DESC);
+        CREATE INDEX IF NOT EXISTS rescue_guild_entitlements_subscription_idx
+        ON rescue_guild_entitlements(paddle_subscription_id)
+        WHERE paddle_subscription_id IS NOT NULL;
+        """,
+    ),
 ]
 
 
