@@ -1,6 +1,6 @@
 """Versioned PostgreSQL migrations shared by the bot and dashboard.
 
-Migrations are intentionally additive and idempotent.  The migration table is
+Migrations are intentionally additive and idempotent. The migration table is
 locked so multiple Railway services can start safely against the same database.
 """
 
@@ -15,6 +15,18 @@ MIGRATIONS = [
         """
         ALTER TABLE rescue_incidents ADD COLUMN IF NOT EXISTS incident_message_id BIGINT;
         ALTER TABLE rescue_incidents ADD COLUMN IF NOT EXISTS discord_channel_missing_at TIMESTAMPTZ;
+
+        CREATE TABLE IF NOT EXISTS rescue_incident_events (
+            id BIGSERIAL PRIMARY KEY,
+            guild_id BIGINT NOT NULL,
+            incident_number BIGINT NOT NULL,
+            channel_id BIGINT,
+            event_type TEXT NOT NULL,
+            actor_id BIGINT,
+            title TEXT NOT NULL,
+            details TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
 
         CREATE TABLE IF NOT EXISTS rescue_admin_audit_events (
             id BIGSERIAL PRIMARY KEY,
@@ -51,6 +63,9 @@ MIGRATIONS = [
         CREATE INDEX IF NOT EXISTS rescue_incidents_guild_priority_status_idx
         ON rescue_incidents(guild_id, status, priority, created_at);
 
+        CREATE INDEX IF NOT EXISTS rescue_incident_events_incident_idx
+        ON rescue_incident_events(guild_id, incident_number, created_at, id);
+
         CREATE INDEX IF NOT EXISTS rescue_incident_events_guild_created_idx
         ON rescue_incident_events(guild_id, created_at DESC, id DESC);
         """,
@@ -75,8 +90,8 @@ async def apply_migrations(pool):
             # One transaction-level advisory lock prevents the bot and dashboard
             # from applying the same migration concurrently during a deploy.
             await conn.execute("SELECT pg_advisory_xact_lock(7263726573637565)")
-            applied = set(await conn.fetch("SELECT version FROM rescue_schema_migrations"))
-            applied_versions = {int(row["version"]) for row in applied}
+            rows = await conn.fetch("SELECT version FROM rescue_schema_migrations")
+            applied_versions = {int(row["version"]) for row in rows}
             for version, name, sql in MIGRATIONS:
                 if version in applied_versions:
                     continue
